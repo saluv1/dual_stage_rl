@@ -15,5 +15,5 @@ This branch provides a moderately refactored version of ps2_rl to facilitate eas
 it should solve optimization problem via qpax (qp solver) in jax
   <br/>so, I bring three main codes that will be combined into one architecture. 
   <br/> [SAC in jax](https://github.com/aliciafmachado/sac) 
-  [hardnet in pytorch](https://github.com/azizanlab/hardnet) 
-  [making trajectory via BCBF idea](https://github.com/davidvwijk/DR-bCBF) 
+  <br/>[hardnet in pytorch](https://github.com/azizanlab/hardnet) 
+  <br/>[making trajectory via BCBF idea](https://github.com/davidvwijk/DR-bCBF) 
