@@ -1,5 +1,5 @@
 import numpy as np
-from quadrotor import Dynamics
+from ds_rl.systems.quadrotor.dynamics import Dynamics
 import matplotlib.pyplot as plt
 
 dyn = Dynamics()
@@ -7,7 +7,7 @@ dyn = Dynamics()
 state = dyn.reset()
 
 for i in range(100):
-    u = np.array([9.807, 0.0, 0.0, 0.0])
+    u = np.array([0.0, 0.0, 0.0, 0.0])
     state = dyn.step(u)
 
 print(state)
