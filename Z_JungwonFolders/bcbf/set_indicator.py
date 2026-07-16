@@ -3,7 +3,6 @@ Define the certified base set and safe set with control barrier functions
 """
 
 import numpy as np
-from .lqrgain import LQRGain
 
 class SetIndicator:
 
