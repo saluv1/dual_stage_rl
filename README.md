@@ -17,8 +17,8 @@ The main purpose of Phase I of PS2-RL is to apply the concept of Backup Control 
 Progress
 - Dynamics (Completed)
 - LQR Base Controller (Completed)
-- Base set (On-Going)
-- Safe Arrival Policy (RL Algorithm) (To-do)
+- Base set (Completed)
+- Safe Arrival Policy (RL Algorithm) (On-Going)
 
 ## Phase II
 it should solve optimization problem via qpax (qp solver) in jax
