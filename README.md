@@ -11,7 +11,7 @@ This branch provides a moderately refactored version of ps2_rl to facilitate eas
 
 ## Environment Setup
 
-### <Phase I>
+## <Phase I>
 The main purpose of Phase I of PS2-RL is to apply the concept of Backup Control Barrier Functions and the Safe Arrival Policy to train the backup policy, which will then be used to derive the implicit control-invariant set.
 
 Progress
@@ -20,7 +20,7 @@ Progress
 - Base set (On-Going)
 - Safe Arrival Policy (RL Algorithm) (To-do)
 
-### <Phase II>
+## <Phase II>
 it should solve optimization problem via qpax (qp solver) in jax
   <br/>so, I bring three main codes that will be combined into one architecture. 
   <br/> [SAC in jax](https://github.com/aliciafmachado/sac) 
