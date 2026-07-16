@@ -24,31 +24,31 @@ Run codes
 - Run LQR controller
 ```
 cd ~/dual_stage_rl/Z_JungwonFolders
-python3 -m scripts.run_lqr.py
+python3 -m scripts.run_lqr
 ```
 
 - Run set indicator
 ```
 cd ~/dual_stage_rl/Z_JungwonFolders
-python3 -m scripts.run_indicator.py
+python3 -m scripts.run_indicator
 ```
 
 - Train policy (JUST FOR REFERENCE. DON'T ACTUALLY TRAIN UNLESS NECESSARY)
 ```
 cd ~/dual_stage_rl/Z_JungwonFolders
-python3 -m backup_policy.train.py
+python3 -m backup_policy.train
 ```
 
 - Check training curves
 ```
 cd ~/dual_stage_rl/Z_JungwonFolders
-python3 -m backup_policy.plot_results.py
+python3 -m backup_policy.plot_results
 ```
 
 - Check rollout plots
 ```
 cd ~/dual_stage_rl/Z_JungwonFolders
-python3 -m backup_policy.visualize_policy.py
+python3 -m backup_policy.visualize_policy
 ```
 
 
