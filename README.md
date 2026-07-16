@@ -18,7 +18,39 @@ Progress
 - Dynamics (Completed)
 - LQR Base Controller (Completed)
 - Base set (Completed)
-- Safe Arrival Policy (RL Algorithm) (On-Going)
+- Safe Arrival Policy (RL Algorithm) (Completed)
+
+Run codes
+- Run LQR controller
+```
+cd ~/dual_stage_rl/Z_JungwonFolders
+python3 -m scripts.run_lqr.py
+```
+
+- Run set indicator
+```
+cd ~/dual_stage_rl/Z_JungwonFolders
+python3 -m scripts.run_indicator.py
+```
+
+- Train policy (JUST FOR REFERENCE. DON'T ACTUALLY TRAIN UNLESS NECESSARY)
+```
+cd ~/dual_stage_rl/Z_JungwonFolders
+python3 -m backup_policy.train.py
+```
+
+- Check training curves
+```
+cd ~/dual_stage_rl/Z_JungwonFolders
+python3 -m backup_policy.plot_results.py
+```
+
+- Check rollout plots
+```
+cd ~/dual_stage_rl/Z_JungwonFolders
+python3 -m backup_policy.visualize_policy.py
+```
+
 
 ## Phase II
 it should solve optimization problem via qpax (qp solver) in jax
