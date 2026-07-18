@@ -1,0 +1,161 @@
+"""
+Script for training and saving the agent.
+"""
+import jax
+import numpy as np
+from collections import defaultdict
+
+
+def train(environment, eval_environment, 
+                      agent,
+                      rng,
+                      min_buffer_capacity=50,
+                      number_updates=5,
+                      batch_size=10,
+                      nb_updated_transitions=2,
+                      exploratory_policy_steps=200,
+                      nb_training_steps=None,
+                      eval_frequency=10000,
+                      eval_episodes=5,
+                      verbose=True,
+                      verbose_frequency=100,
+                      ):
+  """Perform the interaction loop.
+
+  Run the environment loop for `num_episodes` episodes. Each episode is itself
+  a loop which interacts first with the environment to get an observation and
+  then give that observation to the agent in order to retrieve an action. Upon
+  termination of an episode a new episode will be started. If the number of
+  episodes is not given then this will interact with the environment
+  infinitely.
+
+  Args:
+    environment: dm_env used to generate trajectories.
+    eval_environment: dm_env used for evaluation of the agent
+    agent: object selecting actions, updating parameters and storing losses.
+    rng: random generation seed
+    num_steps: number of episodes to run the loop for. If `None` (default), runs
+    without limit.
+    min_buffer_capacity: minimum number of samples before updating the model
+    number_updates: number of updates from the same buffer
+    batch_size: size of the training batch
+    nb_updated_transitions: (after the buffer is filled completely) number of updated transitions to make before updating the model
+    exploratory_policy_steps: nb of steps to explore using uniformly sampled actions
+    nb_training_steps: nb of steps to interact with the env
+    eval_frequency: frequency of evaluation
+    eval_episodes: number of episodes to evaluate the agent
+    verbose: set true if you want to debug
+    verbose_frequency: frequency of verbose print
+  """
+  # Metrics logging
+  all_logs = defaultdict(list)
+  eval_rewards = []
+
+  num_total_steps = 0
+
+  # initialiaze agent and LearnerState
+  learner_state = agent.initialize()
+
+  # number of updated transitions
+  nb_up_transitions = 0
+
+  # Initialize environment
+  timestep = environment.reset()
+
+  while(num_total_steps < nb_training_steps):
+
+    obs = timestep.observation 
+    # Sample action
+    if num_total_steps < exploratory_policy_steps:
+        action_spec = environment.action_spec()
+        action = np.random.uniform(
+            low=action_spec.minimum,
+            high=action_spec.maximum,
+        ).astype(action_spec.dtype)
+
+    else:
+        rng, key = jax.random.split(rng, 2)
+        action = agent.get_action(key, learner_state.params.policy, obs)
+
+    # Convert JAX array to numpy before env/replay buffer.
+    action = np.asarray(action, dtype=np.float32)
+
+    # Debug CIL: check whether action satisfies A u <= b.
+    if getattr(agent, "_use_cil", False) and num_total_steps < 20:
+        import jax.numpy as jnp
+
+        constraints = agent._constraint_provider(
+            agent._cil_provider_params,
+            jnp.asarray(obs, dtype=jnp.float32),
+        )
+
+        action_jax = jnp.asarray(action, dtype=jnp.float32)
+        violation = constraints.A @ action_jax - constraints.b
+
+        print("====== CIL debug ======")
+        print("step:", num_total_steps)
+        print("action:", action)
+        print("A action - b:", np.asarray(violation))
+        print("max violation:", float(jnp.max(violation)))
+
+        if action.shape[0] >= 1:
+            print("thrust:", float(action[0]))
+
+    timestep = environment.step(action)
+    # Increaser number of total steps
+    num_total_steps += 1
+
+    # store transition
+    agent.buffer.store(obs,  action, timestep.reward, timestep.observation, timestep.last())
+    nb_up_transitions += 1
+
+    if agent.buffer.__len__() >= min_buffer_capacity and nb_up_transitions >= nb_updated_transitions:
+        nb_up_transitions = 0
+        for _ in range(number_updates):
+
+            transitions = agent.buffer.sample(batch_size)
+            learner_state, logs = agent.update_fn(learner_state, transitions)
+
+            for log in logs.keys():
+              all_logs[log].append(logs[log])
+            # all_logs.append(logs)
+
+    if timestep.last():
+        timestep = environment.reset()
+
+    # Log if debugging
+    if verbose and num_total_steps % verbose_frequency == 0:
+      if agent.buffer.__len__() >= min_buffer_capacity:
+        for metric in all_logs.keys():
+          mean_metric = np.mean(all_logs[metric][-verbose_frequency:])
+          print(f'Mean value in last {verbose_frequency} steps for {metric}: {mean_metric}')
+        
+      else:
+        print("Filling buffer...")
+      print(f'nb of steps:{num_total_steps}\n')
+
+    # Do evaluation
+    if num_total_steps % eval_frequency == 0:
+        ev_rewards = []
+        for _ in range(eval_episodes):
+            timestep = eval_environment.reset()
+            rewards_episode = 0
+
+            while not timestep.last():
+                # We don't need to split the key since it is deterministic
+                key = None
+                timestep = eval_environment.step(agent.get_action(key, 
+                        learner_state.params.policy, 
+                        timestep.observation, 
+                        deterministic=True))
+                rewards_episode += timestep.reward
+
+            ev_rewards.append(rewards_episode)
+        
+        mean_rewards = np.mean(ev_rewards)
+        eval_rewards.append(mean_rewards)
+
+        print(f'Evaluation after {num_total_steps} steps: {mean_rewards}')
+        print('All rewards: ', ev_rewards)
+    
+  return eval_rewards, all_logs, num_total_steps, learner_state

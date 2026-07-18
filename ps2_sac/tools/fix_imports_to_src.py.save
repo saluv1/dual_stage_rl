@@ -1,0 +1,76 @@
+from __future__ import annotations
+
+import argparse
+import re
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = PROJECT_ROOT / "src"
+
+TOP_LEVEL_PACKAGES = [
+    "agents",
+    "cil",
+    "configs",
+    "drafts",
+    "envs",
+    "replay_buffers",
+    "utils",
+    "train_agent",
+    "main",
+]
+
+
+def rewrite_text(text: str) -> str:
+    new = text
+
+    for pkg in TOP_LEVEL_PACKAGES:
+        # from envs.xxx import y -> from src.envs.xxx import y
+        new = re.sub(
+            rf"(^\s*from\s+){pkg}(\.|\s+import\s+)",
+            rf"\1src.{pkg}\2",
+            new,
+            flags=re.MULTILINE,
+        )
+
+        # import envs.xxx -> import src.envs.xxx
+        new = re.sub(
+            rf"(^\s*import\s+){pkg}(\.|\s*$)",
+            rf"\1src.{pkg}\2",
+            new,
+            flags=re.MULTILINE,
+        )
+
+    return new
+
+
+def main(write: bool) -> None:
+    changed_files = []
+
+    for path in SRC_ROOT.rglob("*.py"):
+        old = path.read_text()
+        new = rewrite_text(old)
+
+        if new != old:
+            changed_files.append(path)
+            print(f"Would update: {path.relative_to(PROJECT_ROOT)}")
+
+            if write:
+                path.write_text(new)
+
+    if not changed_files:
+        print("No files needed changes.")
+    elif write:
+        print(f"Updated {len(changed_files)} files.")
+    else:
+        print(f"{len(changed_files)} files would change. Re-run with --write.")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--write", action="store_true")
+    args = parser.parse_args()
+
+    main(write=args.write)
+
+python tools/fix_imports_to_src.py
