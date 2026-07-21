@@ -18,7 +18,8 @@ Progress
 - Dynamics (Completed)
 - LQR Base Controller (Completed)
 - Base set (Completed)
-- Safe Arrival Policy (RL Algorithm) (Completed)
+- Safe Arrival Policy (Initial state sampling) (On-going)
+- A, b Constraints (TODO)
 
 Run codes
 - Run LQR controller
