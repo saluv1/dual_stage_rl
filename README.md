@@ -51,6 +51,12 @@ cd ~/dual_stage_rl/Z_JungwonFolders
 python3 -m backup_policy.visualize_policy
 ```
 
+- Check rollout trajectories
+```
+cd ~/dual_stage_rl/Z_JungwonFolders
+python3 -m backup_policy.plot_rollouts_3d
+```
+
 
 ## Phase II
 The main purpose of Phase II of PS2-RL is to make constrained policy by mixing the concept of SAC-RL and Hard-net concept (which is implemented by qpax) and A<sub>BCBF</sub>, b<sub>BCBF</sub> will be derived by Safe Arrival Policy which generates control-invariant set implicitly.
