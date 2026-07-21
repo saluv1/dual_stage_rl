@@ -81,6 +81,36 @@ python -m src.main \
   --verbose=True
 ```
 
+A. 물리 시스템
+1. dynamics.py
+2. constraints.py
 
+B. RL environment
+3. env.py
+4. test_hover_sanity.py
+5. test_env_rollout_playback.py
+
+C. 시각화
+6. mjcf.py
+7. mujoco_playback.py
+8. test_mujoco_playback.py
+
+D. CIL
+9. constraint_provider.py
+10. projection.py
+11. action_filter.py
+12. test_mock_actor.py
+13. test_cil_env_rollout_playback.py
+
+E. SAC 구성 요소
+14. networks.py
+15. ps2_action.py
+16. buffer.py
+17. sac.py
+
+F. 실행 흐름
+18. train_agent.py
+19. configs/quadrotor.py
+20. main.py
 ## Contact
 If you have any questions, please feel free to email the authors.
