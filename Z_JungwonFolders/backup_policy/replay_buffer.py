@@ -14,13 +14,33 @@ class ReplayBuffer(object):
         self.action = np.zeros((max_size, action_dim))
         self.next_state = np.zeros((max_size, state_dim))
 
-        # Safe-arrival indicators
-        self.b = np.zeros((max_size, 1))   # base arrival indicator
-        self.c = np.zeros((max_size, 1))   # continuation indicator
+        # Safe-arrival indicators.
+        #
+        # FIX #1: these are the indicators of the CURRENT state x, NOT of the
+        # successor x'. PS2-RL Eq. (11) is
+        #
+        #     Q(x,u) = b(x) + beta * c(x) * Q(F(x,u), pi(F(x,u)))
+        #
+        # and both indicators are evaluated at x. The previous version stored
+        # b(x'), c(x'), which shifted the learned value by one step and -- more
+        # damagingly -- meant the critic never saw a transition whose current
+        # state was in B or F, so the anchors Q|_B = 1 and Q|_F = 0 were never
+        # supplied. train.py now stores those anchors explicitly.
+        self.b = np.zeros((max_size, 1))   # b(x): base arrival indicator
+        self.c = np.zeros((max_size, 1))   # c(x): continuation indicator
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def add(self, state, action, next_state, b, c):
+
+        # b, f, c partition the state space, so b and c are mutually exclusive.
+        # b == 1 and c == 1 simultaneously is impossible and indicates the
+        # indicators were computed on the wrong state -- catch it immediately
+        # rather than silently training on a corrupted target.
+        assert not (b > 0.5 and c > 0.5), (
+            f"b and c are mutually exclusive, got b={b}, c={c}. "
+            "Indicators were likely computed on the wrong state."
+        )
 
         self.state[self.ptr] = state
         self.action[self.ptr] = action
