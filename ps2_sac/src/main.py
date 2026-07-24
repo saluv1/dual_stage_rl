@@ -152,17 +152,40 @@ def main(argv):
     rng = jax.random.PRNGKey(FLAGS.seed)
     environment = environments[config.env_idx]
 
-    try:
-        env = environment(for_evaluation=False, seed=FLAGS.seed)
-    except TypeError:
-        env = environment(for_evaluation=False)
+    if config.env_idx == 3:
+        horizon = int(getattr(config, "horizon", 106))
+
+        env = environment(
+            for_evaluation=False,
+            seed=FLAGS.seed,
+            horizon=horizon,
+        )
+
+        eval_env = environment(
+            for_evaluation=True,
+            seed=FLAGS.seed + 1,
+            horizon=horizon,
+        )
+    else:
+        try:
+            env = environment(
+                for_evaluation=False,
+                seed=FLAGS.seed,
+            )
+        except TypeError:
+            env = environment(for_evaluation=False)
+
+        try:
+            eval_env = environment(
+                for_evaluation=True,
+                seed=FLAGS.seed + 1,
+            )
+        except TypeError:
+            eval_env = environment(for_evaluation=True)
+
         if hasattr(env, "_env"):
             env._env.seed(seed=FLAGS.seed)
 
-    try:
-        eval_env = environment(for_evaluation=False, seed=FLAGS.seed + 1)
-    except TypeError:
-        eval_env = environment(for_evaluation=False)
         if hasattr(eval_env, "_env"):
             eval_env._env.seed(seed=FLAGS.seed + 1)
 
@@ -172,18 +195,32 @@ def main(argv):
 
     # Mock CIL provider.
     # Quadrotor action dimension이 4일 때만 사용해야 합니다.
-    use_cil = environment_spec.actions.shape[-1] == 4
+    use_cil = bool(getattr(config, "use_cil", False))
 
     if use_cil:
+        thrust_margin = float(
+            getattr(config, "cil_thrust_margin", 1.0)
+        )
+
         cil_provider_params = make_thrust_band_constraints(
             g=9.81,
-            thrust_margin=1.0,
+            thrust_margin=thrust_margin,
         )
         constraint_provider = constant_constraint_provider
     else:
+        thrust_margin = None
         cil_provider_params = None
         constraint_provider = None
-
+    print("====== Actual run configuration ======")
+    print("environment:", env_names[config.env_idx])
+    print("training horizon:", getattr(env, "_horizon", None))
+    print("evaluation horizon:", getattr(eval_env, "_horizon", None))
+    print("use_cil:", use_cil)
+    print("cil_thrust_margin:", thrust_margin)
+    print("scale_reward:", config.scale_reward)
+    print("actor lr:", config.p_lr)
+    print("critic lr:", config.q_lr)
+    print("value lr:", config.v_lr)
     model = SAC(
         key,
         environment_spec,
@@ -210,25 +247,25 @@ def main(argv):
                       eval_episodes=config.eval_episodes,
                       )
     if getattr(config, "visualize_after_training", False):
-      trajectory, actions, rewards = rollout_trained_quadrotor_policy(
-          agent=model,
-          learner_state=learner_state,
-          seed=FLAGS.seed + 100,
-          horizon=1000,
-      )
+        trajectory, actions, rewards = rollout_trained_quadrotor_policy(
+            agent=model,
+            learner_state=learner_state,
+            seed=FLAGS.seed + 100,
+            horizon=int(getattr(config, "horizon", 500)),
+        )
 
-      np.savez(
-          "quadrotor_trained_rollout.npz",
-          trajectory=trajectory,
-          actions=actions,
-          rewards=rewards,
-      )
+    np.savez(
+        "quadrotor_trained_rollout.npz",
+        trajectory=trajectory,
+        actions=actions,
+        rewards=rewards,
+    )
 
-      playback_trajectory(
-          trajectory,
-          dt=0.02,
+    playback_trajectory(
+        trajectory,
+        dt=0.02,
           realtime=True,
-      )
+    )
     metrics = {
       'eval_rewards': eval_rewards,
       'all_logs': all_logs,

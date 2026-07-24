@@ -90,9 +90,20 @@ class SAC:
         self.get_action = jax.jit(self._get_action, static_argnums=3)
 
         # Create optimizers
-        self.optimizer_q = optax.adam(self.config.q_lr)
-        self.optimizer_v = optax.adam(self.config.v_lr)
-        self.optimizer_p = optax.adam(self.config.p_lr)
+        self.optimizer_q = optax.chain(
+            optax.clip_by_global_norm(5.0),
+            optax.adam(self.config.q_lr),
+        )
+
+        self.optimizer_v = optax.chain(
+            optax.clip_by_global_norm(5.0),
+            optax.adam(self.config.v_lr),
+        )
+
+        self.optimizer_p = optax.chain(
+            optax.clip_by_global_norm(5.0),
+            optax.adam(self.config.p_lr),
+        )
 
         # Create replay buffer
         self.action_dim = environment_spec.actions.shape[-1]
@@ -116,15 +127,35 @@ class SAC:
         """
         Returns initial params and optimizer states provided dummy observation and action.
         """
-        key_q1, key_q2, key_value, key_policy, key_target_value = jax.random.split(rng, 5)
+        key_q1, key_q2, key_value, key_policy = jax.random.split(rng, 4)
 
-        # Creating parameters
-        q1_params = self._init_q(key_q1, dummy_obs, dummy_actions)
-        q2_params = self._init_q(key_q2, dummy_obs, dummy_actions)
-        v_params = self._init_value(key_value, dummy_obs)
+        q1_params = self._init_q(
+            key_q1,
+            dummy_obs,
+            dummy_actions,
+        )
 
-        policy_params = self._init_policy(key_policy, dummy_obs)
-        v_target_params = self._init_value(key_target_value, dummy_obs)
+        q2_params = self._init_q(
+            key_q2,
+            dummy_obs,
+            dummy_actions,
+        )
+
+        v_params = self._init_value(
+            key_value,
+            dummy_obs,
+        )
+
+        policy_params = self._init_policy(
+            key_policy,
+            dummy_obs,
+        )
+
+        # Target V starts as an exact copy of online V.
+        v_target_params = jax.tree_util.tree_map(
+            lambda x: x.copy(),
+            v_params,
+        )
 
         # Creating opt states
         q1_opt_state = self.optimizer_q.init(q1_params)
@@ -139,47 +170,78 @@ class SAC:
             opt_state=OptState(q1=q1_opt_state, q2=q2_opt_state, v=v_opt_state, policy=policy_opt_state),
         )
 
-    def _loss_fn_q(self, q1_params: types.NestedArray,
-                         q2_params: types.NestedArray,
-                         v_target: types.NestedArray,
-                         transitions: Transitions) -> chex.ArrayNumpy:
+    def _loss_fn_q(
+        self,
+        q1_params: types.NestedArray,
+        q2_params: types.NestedArray,
+        v_target: types.NestedArray,
+        transitions: Transitions,
+    ) -> chex.ArrayNumpy:
         """
         Loss function for Q networks.
-        """
-        # Calculate target value using target nn
-        target_q_value = self.apply_value(v_target, transitions.next_observations)
-        target_q_value = (1. - transitions.dones[..., None]) * target_q_value 
-        target_q_value = transitions.rewards * self.config.scale_reward + self.config.gamma * target_q_value
-        target_q_value = jax.lax.stop_gradient(target_q_value)
-        
-        # Calculate predicted q values using current nn
-        predicted_q1_value = self.apply_q(q1_params, transitions.observations,
-                                                           transitions.actions)
-        predicted_q2_value = self.apply_q(q2_params, transitions.observations,
-                                                           transitions.actions)
 
-        # TD error
+        Expected shapes:
+            rewards:            (batch_size,)
+            dones:              (batch_size,)
+            target_v:           (batch_size,)
+            predicted_q1/q2:    (batch_size,)
+        """
+        target_v = self.apply_value(
+            v_target,
+            transitions.next_observations,
+        )
+
+        rewards = transitions.rewards.astype(target_v.dtype)
+        dones = transitions.dones.astype(target_v.dtype)
+
+        # Catch accidental broadcasting immediately.
+        chex.assert_equal_shape([
+            rewards,
+            dones,
+            target_v,
+        ])
+
+        target_q_value = (
+            rewards * self.config.scale_reward
+            + self.config.gamma * (1.0 - dones) * target_v
+        )
+
+        target_q_value = jax.lax.stop_gradient(target_q_value)
+
+        predicted_q1_value = self.apply_q(
+            q1_params,
+            transitions.observations,
+            transitions.actions,
+        )
+
+        predicted_q2_value = self.apply_q(
+            q2_params,
+            transitions.observations,
+            transitions.actions,
+        )
+
+        chex.assert_equal_shape([
+            target_q_value,
+            predicted_q1_value,
+            predicted_q2_value,
+        ])
+
         td_error_q1 = target_q_value - predicted_q1_value
         td_error_q2 = target_q_value - predicted_q2_value
 
-        # Loss for q1 and q2
         q1_loss = 0.5 * jnp.mean(jnp.square(td_error_q1))
         q2_loss = 0.5 * jnp.mean(jnp.square(td_error_q2))
-        
-        # We return the sum of the two q loss
-        # But we could have implemented the loss separely, but
-        # it shouldn't change much
-        return q1_loss + q2_loss
 
+        return q1_loss + q2_loss
     def _loss_fn_pi(self, policy_params: types.NestedArray, 
                          q1_params: types.NestedArray,
                          q2_params: types.NestedArray,
-                         transitions: Transitions) -> chex.ArrayNumpy:
+                         transitions: Transitions,
+                         key: chex.PRNGKey) -> chex.ArrayNumpy:
         """
         Loss function for policy network.
         """
         mu, sigma = self.apply_policy(policy_params, transitions.observations)
-        self._rng, key = jax.random.split(self._rng, 2)
         new_actions, action_log_probs = self._sample_action(key, mu, sigma)
 
         # Project nominal policy action before Q evaluation.
@@ -202,14 +264,23 @@ class SAC:
 
         # Adding regularization
         l2_loss = 0.5 * sum(jnp.sum(jnp.square(p)) for p in jax.tree_util.tree_leaves(policy_params))
-
-        return policy_loss + l2_loss, entropy
+        l2_coef = getattr(
+            self.config,
+            "policy_l2_coef",
+            0.0,
+        )
+        total_policy_loss = (
+            policy_loss
+            + l2_coef * l2_loss
+        )
+        return total_policy_loss, entropy
 
     def _loss_fn_v(self, v_params: types.NestedArray, 
                          policy_params: types.NestedArray,
                          q1_params: types.NestedArray,
                          q2_params: types.NestedArray,
-                         transitions: Transitions) -> chex.ArrayNumpy:
+                         transitions: Transitions,
+                         key: chex.PRNGKey) -> chex.ArrayNumpy:
         """
         Loss function for value network.
         """
@@ -217,7 +288,6 @@ class SAC:
         mu, sigma = self.apply_policy(policy_params, transitions.observations)
 
         # Split random number generator
-        self._rng, key = jax.random.split(self._rng, 2)
 
         # Apply policy
         new_actions, action_log_probs = self._sample_action(key, mu, sigma)
@@ -249,10 +319,14 @@ class SAC:
         return loss
 
     def _update_fn(self, curr_ls: LearnerState,
-                         transitions: Transitions) -> Tuple[LearnerState, Dict[str, float]]:
+                         transitions: Transitions, update_key: chex.PRNGKey) -> Tuple[LearnerState, Dict[str, float]]:
         """
         Update function.
         """
+        key_pi, key_v = jax.random.split(
+            update_key,
+            2,
+        )
         ### Q network update
         loss_q1, grad_q1 = self._grad_q1(curr_ls.params.q1, curr_ls.params.q2, curr_ls.params.v_target, transitions)
         _, grad_q2 = self._grad_q2(curr_ls.params.q1, curr_ls.params.q2, curr_ls.params.v_target, transitions)
@@ -270,7 +344,7 @@ class SAC:
         (loss_pi, entropy), grad_pi = self._grad_pi(curr_ls.params.policy, 
                                     curr_ls.params.q1, 
                                     curr_ls.params.q2,
-                                    transitions)
+                                    transitions,key_pi)
 
         # Apply gradients
         updates, curr_ls.opt_state.policy = self.optimizer_p.update(grad_pi, 
@@ -279,7 +353,7 @@ class SAC:
 
         ### Value network update
         loss_v, grad_v = self._grad_v(curr_ls.params.v, curr_ls.params.policy, 
-                                      curr_ls.params.q1, curr_ls.params.q2, transitions)
+                                      curr_ls.params.q1, curr_ls.params.q2, transitions,key_v)
 
         # Apply gradients
         updates, curr_ls.opt_state.v = self.optimizer_v.update(grad_v, 
@@ -375,8 +449,26 @@ class SAC:
             u_min=self._u_min,
             u_max=self._u_max,
         )
+        u_safe = safe_out.u_safe
+        projection_distance = jnp.linalg.norm(u_safe - u_nom)
 
-        return safe_out.u_safe
+        # jax.debug.print(
+        #     "u_nom: {u_nom}",
+        #     u_nom=u_nom,
+        #     ordered=True,
+        # )
+        # jax.debug.print(
+        #     "u_safe: {u_safe}",
+        #     u_safe=u_safe,
+        #     ordered=True,
+        # )
+        # jax.debug.print(
+        #     "projection distance: {distance}",
+        #     distance=projection_distance,
+        #     ordered=True,
+        # )
+
+        return u_safe
 
     def _sample_action(self, key: chex.ArrayNumpy,
                              mu: types.NestedArray, 

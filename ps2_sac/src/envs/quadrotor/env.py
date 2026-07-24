@@ -37,6 +37,7 @@ class QuadrotorEnv(dm_env.Environment):
         self._for_evaluation = for_evaluation
         self._horizon = horizon
         self._step_count = 0
+        self._termination_reason = None
         self._rng = np.random.default_rng(seed)
 
         self._dyn_params = QuadrotorParams(dt=0.02)
@@ -92,107 +93,255 @@ class QuadrotorEnv(dm_env.Environment):
         self._state = x_next_np
         self._step_count += 1
 
-        safe = bool(is_safe(jnp.asarray(self._state)))
+        safe = bool(
+            is_safe(
+                jnp.asarray(self._state, dtype=jnp.float32),
+                self._constraint_params,
+            )
+        )
+        ground_collision = bool(self._state[2] <= 0.0)
         timeout = self._step_count >= self._horizon
-        done = timeout or not safe
+        crash_penalty = 0.0
+        xy_radius = float(
+            np.linalg.norm(self._state[0:2])
+        )
 
+        lateral_escape = bool(
+            xy_radius >= 5.0
+        )
+        if not safe:
+            reward = float(reward) - crash_penalty
+            self._termination_reason = "ceiling_violation"
+
+        elif ground_collision:
+            reward = float(reward) - crash_penalty
+            self._termination_reason = "ground_collision"
+
+        elif timeout:
+            self._termination_reason = "timeout"
+        elif lateral_escape:
+            self._termination_reason= "lateral_escape"
+        else:
+            self._termination_reason = None
         if self._for_evaluation:
             self.trajectory.append(self._state.copy())
             self.actions.append(action.copy())
             self.rewards.append(float(reward))
 
-        if done:
-            return dm_env.termination(reward, self._state)
+        # 실제 safety constraint 위반:
+        # LAST이며 discount=0 -> true terminal
+        if not safe:
+            return dm_env.termination(
+                reward=float(reward),
+                observation=self._state,
+            )
+        if ground_collision:
+            # z <= 0
+            return dm_env.termination( reward=float(reward),
+                observation=self._state,
+            )
+        # 단순한 시간 제한:
+        # LAST이지만 discount=1 -> bootstrap 가능한 truncation
+        if lateral_escape:
+            self._termination_reason = "lateral_escape"
 
-        return dm_env.transition(reward, self._state)
+            return dm_env.termination(
+                reward=float(reward),
+                observation=self._state,
+            )
+        if timeout:
+            return dm_env.truncation(
+                reward=float(reward),
+                observation=self._state,
+                discount=1.0,
+            )
 
+        return dm_env.transition(
+            reward=float(reward),
+            observation=self._state,
+        )
     def _reward(self, x, u):
         """
-        Hover tracking reward for quadrotor.
+        Reward adapted directly from the provided MATLAB reward.
 
         State:
-            x = [px, py, pz, vx, vy, vz, qw, qx, qy, qz]
+            x = [px, py, pz,
+                vx, vy, vz,
+                qw, qx, qy, qz]
 
-        Action:
-            u = [a_cmd, wx, wy, wz]
-
-        Hover target:
-            p_des = [0, 0, 2]
-            v_des = [0, 0, 0]
-            q_des = [1, 0, 0, 0]
-            u_des = [g, 0, 0, 0]
+        Control:
+            u = [a_cmd, omega_x_cmd, omega_y_cmd, omega_z_cmd]
         """
         x = np.asarray(x, dtype=np.float32)
         u = np.asarray(u, dtype=np.float32)
 
-        p = x[0:3]
-        v = x[3:6]
-        q = x[6:10]
+        # ==========================================
+        # TUNABLE PARAMETERS
+        # ==========================================
+        tau_pos = 0.4
+        tau_vel = 1.0
+        tau_R = 1.0
+        tau_omega = 5.0
 
-        a_cmd = u[0]
+        w_pos = 1.0
+        w_vel = 0.2
+        w_R = 0.2
+        w_omega = 0.2
+
+        w_act_effort = 0.0
+
+        # ==========================================
+        # STATE / CONTROL EXTRACTION
+        # ==========================================
+        obs_pos = x[0:3]
+        obs_vel = x[3:6]
+        obs_q = x[6:10]
+
+        a_cmd = float(u[0])
         omega_cmd = u[1:4]
 
-        g = 9.81
+        des_pos = np.array(
+            [0.0, 0.0, 2.0],
+            dtype=np.float32,
+        )
 
-        # Normalize quaternion.
-        q_norm = np.linalg.norm(q)
+        des_vel = np.zeros(
+            3,
+            dtype=np.float32,
+        )
+
+        des_R_mat = np.eye(
+            3,
+            dtype=np.float32,
+        )
+
+        des_omega = np.zeros(
+            3,
+            dtype=np.float32,
+        )
+
+        # ==========================================
+        # QUATERNION NORMALIZATION
+        # ==========================================
+        q_norm = np.linalg.norm(obs_q)
+
         if q_norm > 1e-6:
-            q = q / q_norm
+            obs_q = obs_q / q_norm
         else:
-            q = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+            obs_q = np.array(
+                [1.0, 0.0, 0.0, 0.0],
+                dtype=np.float32,
+            )
 
-        # Use shortest quaternion representation.
-        # q and -q represent the same attitude.
-        if q[0] < 0.0:
-            q = -q
+        qw, qx, qy, qz = obs_q
 
-        # Desired hover state.
-        p_des = np.array([0.0, 0.0, 2.0], dtype=np.float32)
-        v_des = np.zeros(3, dtype=np.float32)
+        # ==========================================
+        # QUATERNION -> ROTATION MATRIX
+        # ==========================================
+        obs_R_mat = np.array(
+            [
+                [
+                    1.0 - 2.0 * (qy**2 + qz**2),
+                    2.0 * (qx * qy - qw * qz),
+                    2.0 * (qx * qz + qw * qy),
+                ],
+                [
+                    2.0 * (qx * qy + qw * qz),
+                    1.0 - 2.0 * (qx**2 + qz**2),
+                    2.0 * (qy * qz - qw * qx),
+                ],
+                [
+                    2.0 * (qx * qz - qw * qy),
+                    2.0 * (qy * qz + qw * qx),
+                    1.0 - 2.0 * (qx**2 + qy**2),
+                ],
+            ],
+            dtype=np.float32,
+        )
 
-        pos_err = p - p_des
-        vel_err = v - v_des
+        # ==========================================
+        # ERROR CALCULATIONS
+        # ==========================================
+        e_pos = np.linalg.norm(
+            des_pos - obs_pos,
+            ord=2,
+        )
 
-        xy_err = pos_err[0:2]
-        z_err = pos_err[2]
+        e_vel = np.linalg.norm(
+            des_vel - obs_vel,
+            ord=2,
+        )
 
-        # For q_des = identity, small-angle attitude error is approximately 2*q_vec.
-        att_err = 2.0 * q[1:4]
+        # This reduced-order model has no separate omega state.
+        # omega_cmd is used directly in q_dot.
+        e_omega = np.linalg.norm(
+            des_omega - omega_cmd,
+            ord=2,
+        )
 
-        thrust_err = (a_cmd - g) / g
+        e_R = 0.5 * np.trace(
+            np.eye(3, dtype=np.float32)
+            - des_R_mat.T @ obs_R_mat
+        )
 
-        # Normalize body rates by paper action limit.
-        omega_err = omega_cmd / 18.0
+        # ==========================================
+        # REWARD CALCULATIONS
+        # ==========================================
+        r_pos = np.exp(
+            -((e_pos / tau_pos) ** 2)
+        )
 
-        # Optional: ceiling violation penalty.
-        # PS2-RL itself enforces safety through CIL, not reward penalty.
-        # But for debugging toy CIL / vanilla SAC, this helps avoid bad trajectories.
-        z_ceil = 3.0
-        ceiling_violation = max(0.0, p[2] - z_ceil)
+        r_vel = np.exp(
+            -((e_vel / tau_vel) ** 2)
+        )
 
-        # Weighted negative quadratic reward.
-        # Inspired by paper's tracking reward structure, adapted to hover.
-        cost = 0.0
-        cost += 2.5 * np.sum(np.square(np.clip(xy_err, -5.0, 5.0)))
-        cost += 2.0 * np.square(np.clip(z_err, -5.0, 5.0))
-        cost += 4.0 * np.sum(np.square(np.clip(vel_err, -10.0, 10.0)))
-        cost += 16.0 * np.sum(np.square(np.clip(att_err, -2.0, 2.0)))
+        r_R = np.exp(
+            -((e_R / tau_R) ** 2)
+        )
 
-        # Small control regularization.
-        # This does NOT enforce safety; it just discourages unnecessarily violent actions.
-        cost += 0.01 * np.square(np.clip(thrust_err, -4.0, 4.0))
-        cost += 0.01 * np.sum(np.square(np.clip(omega_err, -1.0, 1.0)))
+        r_omega = np.exp(
+            -((e_omega / tau_omega) ** 2)
+        )
 
-        # Debugging-only safety shaping.
-        cost += 100.0 * np.square(np.clip(ceiling_violation, 0.0, 5.0))
+        tracking_reward_raw = (
+            w_pos * r_pos
+            + w_vel * r_vel
+            + w_R * r_R
+            + w_omega * r_omega
+        )
 
-        reward = -cost
+        sum_weights = (
+            w_pos
+            + w_vel
+            + w_R
+            + w_omega
+        )
+
+        tracking_reward_normalized = (
+            tracking_reward_raw
+            / sum_weights
+        )
+
+        rl_effort_penalty = (
+            w_act_effort
+            * np.linalg.norm(
+                u,
+                ord=2,
+            )
+        )
+
+        # ==========================================
+        # FINAL REWARD
+        # ==========================================
+        reward = (
+            tracking_reward_normalized
+            - rl_effort_penalty
+        )
 
         if not np.isfinite(reward):
-            reward = -1000.0
+            reward = -10.0
 
         return float(reward)
-
 
     def observation_spec(self) -> specs.BoundedArray:
         return specs.BoundedArray(

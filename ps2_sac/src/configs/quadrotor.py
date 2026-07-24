@@ -13,21 +13,21 @@ def get_config():
     config = ml_collections.ConfigDict()
 
     # Batch size
-    config.batch_size = 256
+    config.batch_size = 128
 
     # Reward scaling
-    config.scale_reward = 0.005
+    config.scale_reward = 1.0
 
     # Learning rates
-    config.lr = 1e-5
+    config.lr = 5e-5
     config.p_lr = config.lr
-    config.v_lr = 3e-5
-    config.q_lr = 3e-5
+    config.v_lr = 1e-4
+    config.q_lr = 1e-4
     config.alpha = 0.02
     # Environment index
     # Make sure src/utils/training_utils.py maps 3 -> QuadrotorEnv.
     config.env_idx = 3
-
+    config.policy_l2_coef = 0
     # Buffer settings
     config.min_buffer_capacity = 10000
 
@@ -37,16 +37,16 @@ def get_config():
 
     # Updates
     config.number_updates = 1
-    config.nb_updated_transitions = 1
+    config.nb_updated_transitions = 2
 
     # Total environment steps for initial debug
-    config.num_total_steps = int(50000)
+    config.num_total_steps = int(300_000)
 
     # Discount
     config.gamma = 0.99
 
     # Replay buffer
-    config.replay_buffer_capacity = int(2e5)
+    config.replay_buffer_capacity = int(3e5)
 
     # Target network update
     config.tau = 0.005
@@ -60,7 +60,7 @@ def get_config():
 
 
     config.use_cil = True
-    config.cil_thrust_margin = 4.0
+    config.cil_thrust_margin = 2.0
 
-    config.horizon=1000
+    config.horizon=200
     return config

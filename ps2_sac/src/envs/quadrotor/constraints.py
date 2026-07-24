@@ -29,7 +29,7 @@ def action_bounds(
         omega_i in [-18, 18] rad/s
     """
     u_min = jnp.array([0.0, -18.0, -18.0, -18.0])
-    u_max = jnp.array([4.0 * params.g, 18.0, 18.0, 18.0])
+    u_max = jnp.array([2.0 * params.g, 18.0, 18.0, 18.0])
     return u_min, u_max
 
 
