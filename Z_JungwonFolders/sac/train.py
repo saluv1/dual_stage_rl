@@ -13,15 +13,33 @@ from sac.replay_buffer import ReplayBuffer
 from sac.powerloop_env import PowerLoopEnv
 
 
-def evaluate_policy(agent, seed, episodes=10):
+def evaluate_policy(agent, seed, episodes=10, ref_mode="flat"):
 
-    env = PowerLoopEnv(seed=seed + 1000)
+    # Evaluation runs the FULL horizon with early termination effectively
+    # disabled (thresholds set to infinity). Rationale: if eval terminated on
+    # divergence, a policy that flies off at step 10 would report its mean error
+    # over only those 10 near-reference steps and look deceptively good. Running
+    # the whole loop gives a tracking metric that is comparable across
+    # checkpoints and reflects true quality. We separately report how many steps
+    # the policy stays within the training divergence bounds, as a robustness
+    # signal.
+    term_pos = 1.0
+    term_att = 90.0
+
+    env = PowerLoopEnv(
+        seed=seed + 1000,
+        term_pos_err=float("inf"),
+        term_att_deg=180.0,
+        ref_mode=ref_mode
+    )
+    term_att_err = 2.0 * np.sin(np.deg2rad(term_att) / 2.0)
 
     rewards = []
     pos_errors = []
     v_errors = []
     att_errors = []
     unsafe_counts = []
+    survived_steps = []
 
     for _ in range(episodes):
 
@@ -33,6 +51,8 @@ def evaluate_policy(agent, seed, episodes=10):
         ep_v = []
         ep_att = []
         ep_unsafe = 0
+        ep_survived = 0
+        still_tracking = True
 
         while not done:
 
@@ -45,6 +65,14 @@ def evaluate_policy(agent, seed, episodes=10):
             ep_att.append(info["tracking_error_att"])
             ep_unsafe += int(info["unsafe"] > 0.5)
 
+            # Count steps before the policy first breaches the training bounds.
+            if still_tracking:
+                if (info["tracking_error_pos"] > term_pos
+                        or info["tracking_error_att"] > term_att_err):
+                    still_tracking = False
+                else:
+                    ep_survived += 1
+
             state = next_state
 
         rewards.append(ep_reward)
@@ -52,6 +80,7 @@ def evaluate_policy(agent, seed, episodes=10):
         v_errors.append(np.mean(ep_v))
         att_errors.append(np.mean(ep_att))
         unsafe_counts.append(ep_unsafe)
+        survived_steps.append(ep_survived)
 
     return {
         "eval_reward": float(np.mean(rewards)),
@@ -59,6 +88,7 @@ def evaluate_policy(agent, seed, episodes=10):
         "eval_v_error": float(np.mean(v_errors)),
         "eval_att_error": float(np.mean(att_errors)),
         "eval_unsafe_steps": float(np.mean(unsafe_counts)),
+        "eval_survived_steps": float(np.mean(survived_steps)),
     }
 
 
@@ -85,6 +115,33 @@ def main():
     parser.add_argument("--grad_clip", type=float, default=5.0)
     parser.add_argument("--q_clip", type=float, default=5e6)
 
+    # Early-termination thresholds (fix C). Terminate an episode as a real
+    # failure if position error exceeds term_pos_err (m) OR attitude error
+    # exceeds term_att_deg (degrees). Tunable so you can loosen them if early
+    # training terminates too aggressively.
+    parser.add_argument("--term_pos_err", type=float, default=1.0)
+    parser.add_argument("--term_att_deg", type=float, default=90.0)
+
+    # If set, disable early termination entirely (thresholds -> infinity). Use
+    # on FEASIBLE references, where errors stay bounded so the reward explosion
+    # that termination was added to prevent does not occur. Removing termination
+    # closes the "escape to value 0" door that lets a negative-reward agent
+    # crash on purpose.
+    parser.add_argument("--no_termination", action="store_true")
+
+    # Survival bonus added to every step's reward. Makes a well-tracked step
+    # net-positive so surviving is worth more than terminating (value 0),
+    # removing the suicidal-agent incentive. ~8 is enough to cover the loop's
+    # hardest (inversion) step; the near-hover circle needs only ~4.
+    parser.add_argument("--survival_bonus", type=float, default=0.0)
+
+    # Reference selector:
+    #   "circular" = fixed-yaw feasible horizontal circle, easiest task
+    #   "flat"     = feasible vertical flatness loop (full flip), harder
+    #   "flip"     = infeasible circle+360-flip target, hardest
+    parser.add_argument("--ref_mode", type=str, default="circular",
+                        choices=["circular", "flat", "flip"])
+
     parser.add_argument("--eval_freq", type=int, default=10000)
     parser.add_argument("--eval_episodes", type=int, default=10)
     parser.add_argument("--save_freq", type=int, default=50000)
@@ -101,7 +158,13 @@ def main():
     os.makedirs(args.model_dir, exist_ok=True)
     os.makedirs(args.result_dir, exist_ok=True)
 
-    env = PowerLoopEnv(seed=args.seed)
+    env = PowerLoopEnv(
+        seed=args.seed,
+        term_pos_err=float("inf") if args.no_termination else args.term_pos_err,
+        term_att_deg=180.0 if args.no_termination else args.term_att_deg,
+        ref_mode=args.ref_mode,
+        survival_bonus=args.survival_bonus
+    )
 
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
@@ -160,7 +223,8 @@ def main():
             "eval_pos_error",
             "eval_v_error",
             "eval_att_error",
-            "eval_unsafe_steps"
+            "eval_unsafe_steps",
+            "eval_survived_steps"
         ])
 
     total_numsteps = 0
@@ -207,9 +271,25 @@ def main():
             episode_att_errors.append(info["tracking_error_att"])
             episode_unsafe_steps += int(info["unsafe"] > 0.5)
 
-            # Fixed-horizon task: no terminal absorbing failure.
-            # mask = 0 only on the actual episode horizon.
-            mask = 0.0 if done else 1.0
+            # FIX #3: distinguish truncation from termination.
+            #
+            # This task has NO true terminal -- the episode ends at the 106-step
+            # horizon purely because of a time limit, not because the world
+            # ended. The vehicle is still flying and the loop continues. So the
+            # value of the final state is its genuine continuation value, so we
+            # keep bootstrapping through a time-limit truncation.
+            #
+            # Two distinct end conditions now exist (fix C):
+            #   - divergence  -> terminated = True  -> mask 0 (a real failure;
+            #                    the far-field state has no valid continuation
+            #                    value we want to bootstrap toward)
+            #   - horizon     -> truncated  = True  -> mask 1 (time limit only)
+            # The env sets these explicitly in info; read them directly rather
+            # than re-deriving, so the trainer stays correct if the env's end
+            # conditions change again.
+            terminated = bool(info.get("terminated", False))
+
+            mask = 0.0 if terminated else 1.0
 
             replay_buffer.push(state, action, reward, next_state, mask)
 
@@ -232,7 +312,8 @@ def main():
                 eval_info = evaluate_policy(
                     agent,
                     seed=args.seed,
-                    episodes=args.eval_episodes
+                    episodes=args.eval_episodes,
+                    ref_mode=args.ref_mode
                 )
 
                 print("---------------------------------------")
@@ -242,6 +323,7 @@ def main():
                 print(f"Velocity error: {eval_info['eval_v_error']:.3f}")
                 print(f"Attitude error: {eval_info['eval_att_error']:.3f}")
                 print(f"Unsafe steps: {eval_info['eval_unsafe_steps']:.1f}")
+                print(f"Survived steps (of {env.horizon}): {eval_info['eval_survived_steps']:.1f}")
                 print("---------------------------------------")
 
                 with open(eval_log_path, "a", newline="") as f:
@@ -252,7 +334,8 @@ def main():
                         eval_info["eval_pos_error"],
                         eval_info["eval_v_error"],
                         eval_info["eval_att_error"],
-                        eval_info["eval_unsafe_steps"]
+                        eval_info["eval_unsafe_steps"],
+                        eval_info["eval_survived_steps"]
                     ])
 
             if total_numsteps % args.save_freq == 0:
