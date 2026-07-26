@@ -8,6 +8,9 @@ from src.envs.inverted_pendulum import InvertedPendulumEnv
 from src.envs.pendulum import PendulumEnv
 from src.envs.reacher import ReacherEnv
 from src.envs.quadrotor.env import QuadrotorEnv
+from src.envs.quadrotor.env_powerloop import (
+    QuadrotorPowerLoopEnv,
+)
 
 @chex.dataclass
 class ParamState:
@@ -46,6 +49,7 @@ environments = {
   1: InvertedPendulumEnv,
   2: ReacherEnv,
   3: QuadrotorEnv,
+  4: QuadrotorPowerLoopEnv,
 }
 
 
@@ -54,4 +58,5 @@ env_names = {
   1: 'InvertedPendulumEnv',
   2: 'ReacherEnv',
   3: "Quadrotor",
+  4: "QuadrotorPowerLoop",
 }

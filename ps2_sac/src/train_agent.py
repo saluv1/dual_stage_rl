@@ -23,6 +23,7 @@ def train(
     eval_episodes=5,
     verbose=True,
     verbose_frequency=100,
+    initial_learner_state=None,
 ):
     """
     Perform the environment interaction and learning loop.
@@ -120,7 +121,10 @@ def train(
     # ------------------------------------------------------------------
     # Initialize agent and training environment
     # ------------------------------------------------------------------
-    learner_state = agent.initialize()
+    if initial_learner_state is None:
+        learner_state = agent.initialize()
+    else:
+        learner_state = initial_learner_state
 
     # This variable is used only for the training environment.
     train_timestep = environment.reset()
