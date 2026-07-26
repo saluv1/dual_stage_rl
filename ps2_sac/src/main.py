@@ -548,6 +548,11 @@ def main(argv):
                 v=saved_learner_state.params.v,
                 policy=saved_learner_state.params.policy,
                 v_target=saved_learner_state.params.v_target,
+
+                # Phase II temperature starts again at alpha0=0.2.
+                log_alpha=(
+                    fresh_learner_state.params.log_alpha
+                ),
             ),
             opt_state=fresh_learner_state.opt_state,
         )
