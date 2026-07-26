@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # SAC: Soft Actor-Critic
 
 Soft Actor-Critic implementation in JAX, based on **Soft Actor-Critic: Off-Policy Maximum Entropy Deep Reinforcement Learning with a Stochastic Actor** from Haarnoja et al.
