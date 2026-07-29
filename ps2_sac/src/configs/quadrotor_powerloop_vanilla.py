@@ -23,7 +23,7 @@ def get_config():
     # SAC networks and optimization
     # ------------------------------------------------------------------
     config.batch_size = 64
-    config.scale_reward = 1.0
+    config.scale_reward = 0.01
 
     config.p_lr = 5e-5
     config.q_lr = 1e-4
@@ -31,7 +31,10 @@ def get_config():
 
     config.gamma = 0.99
     config.tau = 0.005
+    config.normalize_q_actions = True
 
+    config.log_std_min = -5.0
+    config.log_std_max = 2.0
     config.policy_l2_coef = 0.0
     config.grad_clip_norm = 5.0
     config.q_clip = 5e6

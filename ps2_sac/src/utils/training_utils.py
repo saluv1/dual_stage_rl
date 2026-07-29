@@ -13,19 +13,23 @@ from src.envs.reacher import ReacherEnv
 @chex.dataclass
 class ParamState:
     policy: types.NestedArray
-    v: types.NestedArray
+
     q1: types.NestedArray
     q2: types.NestedArray
-    v_target: types.NestedArray
+
+    q1_target: types.NestedArray
+    q2_target: types.NestedArray
+
     log_alpha: types.NestedArray
 
 
 @chex.dataclass
 class OptState:
     policy: types.NestedArray
-    v: types.NestedArray
+
     q1: types.NestedArray
     q2: types.NestedArray
+
     alpha: types.NestedArray
 
 

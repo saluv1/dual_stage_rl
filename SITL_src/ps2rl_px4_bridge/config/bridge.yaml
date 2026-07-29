@@ -1,0 +1,50 @@
+/ps2rl_px4_bridge:
+  ros__parameters:
+    # ---- where PS2-RL and your trained run live -------------------------
+    ps2rl_path: "/home/CHANGE_ME/PS2-RL"
+    run_dir: "/home/CHANGE_ME/PS2-RL/checkpoints/deployed_ps2/quadrotor_ps2_learned"
+    checkpoint: "best"
+    # Override only if the phase-1 artifact moved since training.
+    learned_backup_policy_path: ""
+    reference_path: ""
+    # "cpu" is usually enough for a single 26D MLP + one 4-var QP.
+    # Switch to "cuda" if warm latency exceeds ~15 ms.
+    jax_platform: "cpu"
+    jax_single_thread: true
+
+    # ---- control loop ---------------------------------------------------
+    policy_rate: 50.0        # in SIMULATION time; must match env_cfg.dt (0.02 s)
+    policy_timer_oversample: 1.0   # wall-clock timer runs this much faster
+    setpoint_rate: 50.0      # zero-order hold republish rate
+
+    # ---- thrust mapping (run thrust_calib first!) -----------------------
+    thrust_model: "linear"   # -> "quadratic" after calibration
+    hover_thrust: 0.60       # your MPC_THR_HOVER
+    thrust_k0: 0.0
+    thrust_k1: 0.0
+    thrust_k2: 0.0
+    thrust_min: 0.02
+    thrust_max: 1.0
+
+    # ---- geometry -------------------------------------------------------
+    # Shifts the policy's ENU frame relative to the PX4 local origin.
+    origin_offset_enu: [0.0, 0.0, 0.0]
+    takeoff_altitude: 2.5
+    lineup_distance: 10.0    # how far upstream of the entry point to start
+    lineup_position_tol: 0.35
+    lineup_settle_time: 3.0
+    dash_speed_tol: 0.15     # training used ZERO velocity perturbation
+    dash_tilt_tol_deg: 4.0   # training used ZERO attitude perturbation
+    dash_pos_tol: 0.10       # training perturbed position by +-0.1 m
+    dash_accel: 3.0          # run-in acceleration, matches MPC_ACC_HOR
+    dash_timeout: 15.0
+    recover_altitude: 3.0
+    recover_time: 4.0
+
+    # ---- safety watchdogs ----------------------------------------------
+    z_abort_margin: 1.0      # abort if z > z_max + this
+    arena_radius: 40.0
+    odom_timeout: 0.30       # in SIMULATION time; auto-scaled by measured RTF
+    auto_start: true
+
+    log_csv: "/tmp/ps2rl_flight.csv"
