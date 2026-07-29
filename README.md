@@ -137,5 +137,12 @@ taskset -c 0-7 ros2 run ps2rl_px4_bridge ps2rl_bridge --ros-args \
 
 python3 ~/ps2rl_ws/src/ps2rl_px4_bridge/plot_trajectory.py /tmp/run5.csv
 ```
+
+-if you don't kill your px4, there will be some kind of errors. you can solve that problem as below
+```
+jobs -l
+fg %1
+Ctrl+C
+```
 ## Contact
 If you have any questions, please feel free to email the authors.
