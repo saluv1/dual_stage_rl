@@ -113,5 +113,29 @@ F. 실행 흐름
 18. train_agent.py
 19. configs/quadrotor.py
 20. main.py
+
+## SITL
+
+Run codes
+-run sitl and plotting
+```
+cd ~/PX4-Autopilot
+taskset -c 8-15 env HEADLESS=1 make px4_sitl gz_x500
+
+taskset -c 8-15 MicroXRCEAgent udp4 -p 8888
+
+echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+
+python3 plot_trajectory.py /tmp/run_final.csv
+
+taskset -c 0-7 ros2 run ps2rl_px4_bridge ps2rl_bridge --ros-args \
+-p ps2rl_path:=$HOME/PS2-RL \
+-p run_dir:=$HOME/PS2-RL/checkpoints/deployed_ps2/quadrotor_ps2_learned \
+-p hover_thrust:=0.289 \
+-p lineup_distance:=18.0 \
+-p log_csv:=/tmp/run5.csv
+
+python3 ~/ps2rl_ws/src/ps2rl_px4_bridge/plot_trajectory.py /tmp/run5.csv
+```
 ## Contact
 If you have any questions, please feel free to email the authors.
