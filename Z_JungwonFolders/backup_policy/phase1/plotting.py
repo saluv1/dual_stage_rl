@@ -104,7 +104,7 @@ def plot_final_summary(summary: dict, records: Sequence[EpisodeRecord], output_d
             data.append(times)
             labels.append(name)
     if data:
-        ax.boxplot(data, tick_labels=labels, showfliers=True)
+        ax.boxplot(data, labels=labels, showfliers=True)
         ax.tick_params(axis="x", rotation=25)
         ax.set_ylabel("Successful arrival time (s)")
         ax.grid(True, axis="y", alpha=0.3)
