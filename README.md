@@ -18,45 +18,10 @@ Progress
 - Dynamics (Completed)
 - LQR Base Controller (Completed)
 - Base set (Completed)
-- Safe Arrival Policy (Initial state sampling) (On-going)
+- Safe Arrival Policy (Initial state sampling) (Done)
 - A, b Constraints (TODO)
+- Final review (TODO)
 
-Run codes
-- Run LQR controller
-```
-cd ~/dual_stage_rl/Z_JungwonFolders
-python3 -m scripts.run_lqr
-```
-
-- Run set indicator
-```
-cd ~/dual_stage_rl/Z_JungwonFolders
-python3 -m scripts.run_indicator
-```
-
-- Train policy (JUST FOR REFERENCE. DON'T ACTUALLY TRAIN UNLESS NECESSARY)
-```
-cd ~/dual_stage_rl/Z_JungwonFolders
-python3 -m backup_policy.train
-```
-
-- Check training curves
-```
-cd ~/dual_stage_rl/Z_JungwonFolders
-python3 -m backup_policy.plot_results
-```
-
-- Check rollout plots
-```
-cd ~/dual_stage_rl/Z_JungwonFolders
-python3 -m backup_policy.visualize_policy
-```
-
-- Check rollout trajectories
-```
-cd ~/dual_stage_rl/Z_JungwonFolders
-python3 -m backup_policy.plot_rollouts_3d
-```
 
 
 ## Phase II
