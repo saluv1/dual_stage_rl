@@ -2,7 +2,6 @@
 __pycache__/
 *.py[cod]
 *$py.class
-/__pycache__/
 
 # Python virtual environments
 .venv/
@@ -32,4 +31,4 @@ dist/
 Thumbs.db
 
 # Experiments folder in Z_JungwonFolders
-/experiments/
+experiments/
