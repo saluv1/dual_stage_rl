@@ -65,10 +65,6 @@ class SAC:
             environment_spec.actions.maximum,
             dtype=jnp.float32,
         )
-        self._action_midpoint = 0.5 * (self._u_max + self._u_min)
-        self._action_half_range = 0.5 * (self._u_max - self._u_min)
-        if bool(jnp.any(self._action_half_range <= 0.0)):
-            raise ValueError("Every action dimension must have nonzero range.")
 
         # The first cil_state_dim entries must remain the physical state.
         self._cil_state_dim = int(
@@ -214,13 +210,11 @@ class SAC:
         self.apply_policy = jax.jit(self._apply_policy)
         self.apply_q = jax.jit(self._apply_q)
         self.get_action = jax.jit(self._get_action, static_argnums=3)
-        self.get_actions = jax.jit(self._get_actions, static_argnums=3)
 
         self.buffer = ReplayBuffer(
             size_=int(self.config.replay_buffer_capacity),
             featuredim_=self.observation_dim,
             actiondim_=self.action_dim,
-            seed=int(getattr(self.config, "replay_seed", 0)),
         )
 
     def initialize(self) -> LearnerState:
@@ -352,16 +346,6 @@ class SAC:
             next_mu,
             next_log_sigma,
         )
-        next_action_log_probs = jnp.clip(
-            jnp.nan_to_num(
-                next_action_log_probs,
-                nan=0.0,
-                posinf=20.0,
-                neginf=-20.0,
-            ),
-            -20.0,
-            20.0,
-        )
 
         next_q_actions = self._project_actions_for_q(
             transitions.next_observations,
@@ -415,8 +399,8 @@ class SAC:
         td_error_q1 = target_q_value - predicted_q1
         td_error_q2 = target_q_value - predicted_q2
 
-        q1_loss = jnp.mean(jnp.square(td_error_q1))
-        q2_loss = jnp.mean(jnp.square(td_error_q2))
+        q1_loss = 0.5 * jnp.mean(jnp.square(td_error_q1))
+        q2_loss = 0.5 * jnp.mean(jnp.square(td_error_q2))
         total_q_loss = q1_loss + q2_loss
 
         shuffled_actions = jnp.roll(
@@ -508,16 +492,6 @@ class SAC:
             mu,
             raw_log_sigma,
         )
-        action_log_probs = jnp.clip(
-            jnp.nan_to_num(
-                action_log_probs,
-                nan=0.0,
-                posinf=20.0,
-                neginf=-20.0,
-            ),
-            -20.0,
-            20.0,
-        )
 
         q_actions = self._project_actions_for_q(
             transitions.observations,
@@ -592,8 +566,7 @@ class SAC:
         entropy_residual = jax.lax.stop_gradient(
             action_log_probs + self._target_entropy
         )
-        alpha = jnp.exp(log_alpha)
-        return -jnp.mean(alpha * entropy_residual)
+        return -jnp.mean(log_alpha * entropy_residual)
 
     def _update_fn(
         self,
@@ -787,41 +760,6 @@ class SAC:
         )
         return safe_out.u_safe
 
-    def _get_actions(
-        self,
-        key: chex.PRNGKey,
-        policy_params: types.NestedArray,
-        observations: types.NestedArray,
-        deterministic: bool = False,
-    ) -> types.NestedArray:
-        """Return a batch of physical actions without changing agent APIs."""
-        observations = jnp.asarray(observations, dtype=jnp.float32)
-        if observations.ndim == 1:
-            observations = observations[None, :]
-
-        mu, raw_log_sigma = self.apply_policy(policy_params, observations)
-        if deterministic:
-            nominal_actions = self._transform_action_to_env_spec(mu)
-        else:
-            nominal_actions, _ = self._sample_action(
-                key,
-                mu,
-                raw_log_sigma,
-            )
-
-        if not self._use_cil:
-            return nominal_actions
-
-        safe_out = get_safe_action_batch(
-            nominal_actions,
-            self._constraint_observations(observations),
-            self._cil_provider_params,
-            self._constraint_provider,
-            self._u_min,
-            self._u_max,
-        )
-        return safe_out.u_safe
-
     def _get_action(
         self,
         key: chex.PRNGKey,
@@ -829,13 +767,34 @@ class SAC:
         observations: types.NestedArray,
         deterministic: bool = False,
     ) -> types.NestedArray:
-        actions = self._get_actions(
-            key,
-            policy_params,
-            jnp.reshape(observations, (1, -1)),
-            deterministic,
+        obs = jnp.reshape(observations, (1, -1))
+        mu, log_sigma = self.apply_policy(policy_params, obs)
+
+        if deterministic:
+            nominal_action_batched = self._transform_action_to_env_spec(mu)
+        else:
+            nominal_action_batched, _ = self._sample_action(
+                key,
+                mu,
+                log_sigma,
+            )
+
+        nominal_action = jnp.ravel(nominal_action_batched)
+        if not self._use_cil:
+            return nominal_action
+
+        constraint_observation = self._constraint_observations(
+            jnp.ravel(observations)
         )
-        return actions[0]
+        safe_out = get_safe_action(
+            u_nom=nominal_action,
+            obs=constraint_observation,
+            provider_params=self._cil_provider_params,
+            constraint_provider=self._constraint_provider,
+            u_min=self._u_min,
+            u_max=self._u_max,
+        )
+        return safe_out.u_safe
 
     def _sample_action(
         self,
@@ -857,23 +816,17 @@ class SAC:
             standard_deviation,
         )
 
-        # Stable change-of-variables correction for the complete mapping
-        #     a = midpoint + half_range * tanh(z).
-        # PS2-RL includes both the tanh Jacobian and the physical affine
-        # action-scale Jacobian, so target_entropy=-action_dim is interpreted
-        # in the same physical-action density convention.
-        tanh_log_det = (
+        # Stable tanh Jacobian correction. The affine conversion from
+        # normalized to physical actions is intentionally excluded so that
+        # target_entropy remains in normalized action coordinates.
+        log_prob -= (
             2.0
             * (
                 jnp.log(2.0)
                 - pre_tanh_actions
                 - jax.nn.softplus(-2.0 * pre_tanh_actions)
             )
-        )
-        affine_log_det = jnp.log(
-            jnp.maximum(self._action_half_range, 1e-6)
-        )
-        log_prob -= jnp.sum(tanh_log_det + affine_log_det, axis=-1)
+        ).sum(axis=-1)
 
         actions = self._transform_action_to_env_spec(pre_tanh_actions)
         return actions, log_prob

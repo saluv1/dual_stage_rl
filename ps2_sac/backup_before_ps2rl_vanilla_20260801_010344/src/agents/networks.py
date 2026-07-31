@@ -1,6 +1,6 @@
-"""Haiku networks shared by the existing SAC implementation."""
-
-from __future__ import annotations
+"""
+Networks for value, Q, and policy functions.
+"""
 
 from typing import Optional, Sequence, Tuple
 
@@ -12,12 +12,12 @@ import jax.numpy as jnp
 import numpy as np
 
 
-_SMALL_FINAL_INIT = hk.initializers.RandomNormal(stddev=1e-2)
-_ZERO_INIT = hk.initializers.Constant(0.0)
-
-
 class ValueNetwork(hk.Module):
-    """Legacy value network retained for compatibility with older agents."""
+    """Legacy value network.
+
+    Modern twin-target-Q SAC does not use this network, but it is retained
+    so imports from other agents do not break.
+    """
 
     def __init__(
         self,
@@ -25,21 +25,23 @@ class ValueNetwork(hk.Module):
         name: Optional[str] = None,
     ) -> None:
         super().__init__(name=name)
-        self._output_sizes = tuple(output_sizes)
+        self._output_sizes = output_sizes
 
-    def __call__(self, observations: chex.Array) -> chex.Array:
+    def __call__(
+        self,
+        observations: chex.Array,
+    ) -> chex.Array:
         h = observations
+
         for output_size in self._output_sizes:
-            h = jax.nn.relu(hk.Linear(output_size)(h))
-        return hk.Linear(
-            1,
-            w_init=_SMALL_FINAL_INIT,
-            b_init=_ZERO_INIT,
-        )(h)[..., 0]
+            h = hk.Linear(output_size)(h)
+            h = jax.nn.relu(h)
+
+        return hk.Linear(1)(h)[..., 0]
 
 
 class SoftQNetwork(hk.Module):
-    """Twin-SAC critic MLP receiving observation and physical action."""
+    """Plain MLP critic without LayerNorm."""
 
     def __init__(
         self,
@@ -47,26 +49,34 @@ class SoftQNetwork(hk.Module):
         name: Optional[str] = None,
     ) -> None:
         super().__init__(name=name)
-        self._output_sizes = tuple(output_sizes)
+        self._output_sizes = output_sizes
 
     def __call__(
         self,
         observations: chex.Array,
         actions: chex.Array,
     ) -> chex.Array:
-        h = jnp.concatenate([observations, actions], axis=-1)
+        # Concatenate along the feature dimension.
+        h = jnp.concatenate(
+            [observations, actions],
+            axis=-1,
+        )
+
         for output_size in self._output_sizes:
-            h = jax.nn.relu(hk.Linear(output_size)(h))
+            h = hk.Linear(output_size)(h)
+            h = jax.nn.relu(h)
+
         return hk.Linear(
             1,
-            w_init=_SMALL_FINAL_INIT,
-            b_init=_ZERO_INIT,
-            name="q_head",
+            b_init=hk.initializers.Constant(0.0),
         )(h)[..., 0]
 
 
 class PolicyNetwork(hk.Module):
-    """Tanh-Gaussian actor producing pre-tanh mean and raw log standard deviation."""
+    """Gaussian policy network.
+
+    The second output is interpreted as log standard deviation by SAC.
+    """
 
     def __init__(
         self,
@@ -75,7 +85,8 @@ class PolicyNetwork(hk.Module):
         name: Optional[str] = None,
     ) -> None:
         super().__init__(name=name)
-        self._output_sizes = tuple(output_sizes)
+
+        self._output_sizes = output_sizes
         self._action_spec = action_spec
 
     def __call__(
@@ -86,25 +97,22 @@ class PolicyNetwork(hk.Module):
         action_dims = int(np.prod(action_shape))
 
         h = observations
-        for output_size in self._output_sizes:
-            h = jax.nn.relu(hk.Linear(output_size)(h))
 
-        # PS2-RL uses a small final-layer scale.  Keeping the two heads
-        # separate preserves dual_stage_rl's current parameter structure.
+        for output_size in self._output_sizes:
+            h = hk.Linear(output_size)(h)
+            h = jax.nn.relu(h)
+
         mu = hk.Linear(
             action_dims,
-            w_init=_SMALL_FINAL_INIT,
-            b_init=_ZERO_INIT,
             name="mu_head",
         )(h)
-        raw_log_sigma = hk.Linear(
+
+        log_sigma = hk.Linear(
             action_dims,
-            w_init=_SMALL_FINAL_INIT,
-            b_init=_ZERO_INIT,
             name="log_sigma_head",
         )(h)
 
         return (
             hk.Reshape(action_shape)(mu),
-            hk.Reshape(action_shape)(raw_log_sigma),
+            hk.Reshape(action_shape)(log_sigma),
         )

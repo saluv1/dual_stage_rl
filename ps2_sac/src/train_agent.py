@@ -1,11 +1,120 @@
-"""
-Script for training and evaluating the agent.
+"""Training and evaluation loop for the existing dual_stage_rl SAC agent.
+
+The function keeps its original public signature.  ``environment`` may now be
+one dm_env environment or a sequence of environments.  The quadrotor vanilla
+config passes 32 environments and counts total *transitions* exactly as the
+PS2-RL reproduction code does.
 """
 
-from collections import defaultdict
+from __future__ import annotations
+
+from collections import defaultdict, deque
+from collections.abc import Sequence
 
 import jax
 import numpy as np
+
+
+def _as_environment_list(environment):
+    if isinstance(environment, Sequence) and not isinstance(
+        environment, (str, bytes)
+    ):
+        environments = list(environment)
+    else:
+        environments = [environment]
+    if not environments:
+        raise ValueError("At least one training environment is required.")
+    return environments
+
+
+def _extract_physical_states(observations: np.ndarray) -> np.ndarray:
+    observations = np.asarray(observations, dtype=np.float32)
+    if observations.shape[-1] < 10:
+        raise ValueError("Quadrotor observations must contain a 10-D state.")
+    return observations[..., :10]
+
+
+def _evaluate(
+    *,
+    eval_environment,
+    agent,
+    learner_state,
+    rng,
+    eval_episodes: int,
+    step_label: int,
+):
+    episode_returns = []
+
+    for episode_idx in range(eval_episodes):
+        timestep = eval_environment.reset()
+        episode_return = 0.0
+        episode_actions = []
+        episode_observations = [
+            np.asarray(timestep.observation, dtype=np.float32)
+        ]
+
+        while not timestep.last():
+            rng, action_key = jax.random.split(rng, 2)
+            action = agent.get_action(
+                action_key,
+                learner_state.params.policy,
+                timestep.observation,
+                deterministic=True,
+            )
+            action = np.asarray(action, dtype=np.float32)
+            timestep = eval_environment.step(action)
+            episode_return += float(timestep.reward)
+            episode_actions.append(action.copy())
+            episode_observations.append(
+                np.asarray(timestep.observation, dtype=np.float32)
+            )
+
+        observations = np.asarray(episode_observations, dtype=np.float32)
+        states = _extract_physical_states(observations)
+        actions = np.asarray(episode_actions, dtype=np.float32)
+        length = int(actions.shape[0])
+        episode_returns.append(episode_return)
+
+        if length:
+            initial_action = actions[0]
+            mean_action = np.mean(actions, axis=0)
+            min_action = np.min(actions, axis=0)
+            max_action = np.max(actions, axis=0)
+        else:
+            initial_action = mean_action = min_action = max_action = None
+
+        velocity_norms = np.linalg.norm(states[:, 3:6], axis=1)
+        reason = getattr(
+            eval_environment,
+            "termination_reason",
+            getattr(eval_environment, "_termination_reason", None),
+        )
+        print(
+            f"Eval episode {episode_idx}: return={episode_return:.6f}, "
+            f"length={length}, "
+            f"mean_reward={episode_return / max(length, 1):.6f}, "
+            f"final_z={float(states[-1, 2]):.6f}, reason={reason}"
+        )
+        print(
+            "  z min/max: "
+            f"{float(np.min(states[:, 2])):.6f} / "
+            f"{float(np.max(states[:, 2])):.6f}"
+        )
+        print(
+            "  max velocity norm: "
+            f"{float(np.max(velocity_norms)):.6f}"
+        )
+        print(f"  final physical state: {states[-1]}")
+        if initial_action is not None:
+            print(f"  initial action: {initial_action}")
+            print(f"  mean action: {mean_action}")
+            print(f"  action min: {min_action}")
+            print(f"  action max: {max_action}")
+
+    mean_return = float(np.mean(episode_returns))
+    print(f"Evaluation after {step_label} transitions: {mean_return}")
+    print("All rewards:", episode_returns)
+    return mean_return, rng
 
 
 def train(
@@ -24,524 +133,191 @@ def train(
     verbose=True,
     verbose_frequency=100,
     initial_learner_state=None,
+    numpy_seed=0,
 ):
+    """Interact, update SAC, and periodically evaluate.
+
+    ``nb_training_steps``, ``exploratory_policy_steps``, evaluation intervals,
+    and update intervals are measured in transitions across all parallel
+    environments, not vector-environment rounds.
     """
-    Perform the environment interaction and learning loop.
-
-    Args:
-        environment:
-            Training dm_env environment.
-
-        eval_environment:
-            Separate dm_env environment used only for deterministic evaluation.
-
-        agent:
-            Agent providing initialize(), get_action(), update_fn(), and buffer.
-
-        rng:
-            JAX PRNG key.
-
-        min_buffer_capacity:
-            Minimum number of transitions required before gradient updates begin.
-
-        number_updates:
-            Number of gradient updates performed at each update point.
-
-        batch_size:
-            Replay-buffer minibatch size.
-
-        nb_updated_transitions:
-            Number of new environment transitions between update points.
-
-            For example:
-                nb_updated_transitions=8
-                number_updates=1
-
-            means one gradient update per eight environment transitions.
-
-        exploratory_policy_steps:
-            Number of initial steps using uniformly sampled actions.
-
-            When this is zero, actions are sampled from the stochastic policy
-            from the beginning.
-
-        nb_training_steps:
-            Total number of environment interactions.
-
-        eval_frequency:
-            Evaluate every this many environment steps.
-
-        eval_episodes:
-            Number of deterministic evaluation episodes.
-
-        verbose:
-            Whether to print training metrics.
-
-        verbose_frequency:
-            Number of environment steps between metric prints.
-
-    Returns:
-        eval_rewards:
-            Mean evaluation returns.
-
-        all_logs:
-            Dictionary containing loss, gradient, and entropy histories.
-
-        num_total_steps:
-            Number of completed environment interactions.
-
-        learner_state:
-            Final learner state.
-    """
-
     if nb_training_steps is None:
         raise ValueError("nb_training_steps must be specified.")
+    for name, value in (
+        ("min_buffer_capacity", min_buffer_capacity),
+        ("number_updates", number_updates),
+        ("batch_size", batch_size),
+        ("nb_updated_transitions", nb_updated_transitions),
+    ):
+        if int(value) <= 0:
+            raise ValueError(f"{name} must be positive.")
 
-    if min_buffer_capacity <= 0:
-        raise ValueError("min_buffer_capacity must be positive.")
+    environments = _as_environment_list(environment)
+    num_envs = len(environments)
+    np_rng = np.random.default_rng(int(numpy_seed))
 
-    if nb_updated_transitions <= 0:
-        raise ValueError("nb_updated_transitions must be positive.")
+    learner_state = (
+        agent.initialize()
+        if initial_learner_state is None
+        else initial_learner_state
+    )
+    timesteps = [env.reset() for env in environments]
 
-    if number_updates <= 0:
-        raise ValueError("number_updates must be positive.")
-
-    if batch_size <= 0:
-        raise ValueError("batch_size must be positive.")
-
-    # ------------------------------------------------------------------
-    # Logging
-    # ------------------------------------------------------------------
+    recent_logs = defaultdict(lambda: deque(maxlen=100))
     all_logs = defaultdict(list)
     eval_rewards = []
-
     num_total_steps = 0
-    nb_up_transitions = 0
+    next_eval_step = int(eval_frequency) if eval_frequency > 0 else None
+    next_verbose_step = (
+        int(verbose_frequency) if verbose and verbose_frequency > 0 else None
+    )
 
-    # ------------------------------------------------------------------
-    # Initialize agent and training environment
-    # ------------------------------------------------------------------
-    if initial_learner_state is None:
-        learner_state = agent.initialize()
-    else:
-        learner_state = initial_learner_state
+    while num_total_steps < int(nb_training_steps):
+        active_count = min(
+            num_envs,
+            int(nb_training_steps) - num_total_steps,
+        )
+        active_envs = environments[:active_count]
+        active_timesteps = timesteps[:active_count]
+        observations = np.stack(
+            [
+                np.asarray(ts.observation, dtype=np.float32)
+                for ts in active_timesteps
+            ],
+            axis=0,
+        )
 
-    # This variable is used only for the training environment.
-    train_timestep = environment.reset()
-
-    while num_total_steps < nb_training_steps:
-        train_observation = train_timestep.observation
-
-        # --------------------------------------------------------------
-        # Select training action
-        # --------------------------------------------------------------
-        if num_total_steps < exploratory_policy_steps:
-            action_spec = environment.action_spec()
-
-            action = np.random.uniform(
-                low=action_spec.minimum,
-                high=action_spec.maximum,
-            ).astype(action_spec.dtype)
-
-        else:
-            rng, action_key = jax.random.split(rng, 2)
-
-            action = agent.get_action(
+        # One batched actor call replaces 32 Python/JAX calls. The random
+        # warm-up decision is made once per vector step, as in PS2-RL.
+        rng, action_key = jax.random.split(rng, 2)
+        policy_actions = np.asarray(
+            agent.get_actions(
                 action_key,
                 learner_state.params.policy,
-                train_observation,
+                observations,
                 deterministic=False,
-            )
-
-        action = np.asarray(
-            action,
+            ),
             dtype=np.float32,
         )
 
-        # --------------------------------------------------------------
-        # Optional CIL debugging
-        # --------------------------------------------------------------
-        if (
-            getattr(agent, "_use_cil", False)
-            and num_total_steps < 20
+        action_spec = active_envs[0].action_spec()
+        random_actions = np_rng.uniform(
+            low=np.asarray(action_spec.minimum, dtype=np.float32),
+            high=np.asarray(action_spec.maximum, dtype=np.float32),
+            size=(active_count, int(action_spec.shape[0])),
+        ).astype(np.float32)
+        # Match PS2-RL's vector collector: the whole vector step is random
+        # while the pre-step global transition count is below start_steps.
+        actions = (
+            random_actions
+            if num_total_steps < int(exploratory_policy_steps)
+            else policy_actions
+        )
+
+        next_timesteps = []
+        rewards = np.empty((active_count,), dtype=np.float32)
+        next_observations = np.empty_like(observations)
+        dones = np.empty((active_count,), dtype=np.float32)
+
+        for i, (env, timestep, action) in enumerate(
+            zip(active_envs, active_timesteps, actions)
         ):
-            import jax.numpy as jnp
-
-            constraints = agent._constraint_provider(
-                agent._cil_provider_params,
-                jnp.asarray(
-                    train_observation,
-                    dtype=jnp.float32,
-                ),
+            next_timestep = env.step(action)
+            rewards[i] = np.float32(next_timestep.reward)
+            next_observations[i] = np.asarray(
+                next_timestep.observation, dtype=np.float32
             )
-
-            action_jax = jnp.asarray(
-                action,
-                dtype=jnp.float32,
+            # PS2-RL marks the finite horizon as done.  dm_env termination
+            # has discount=0, while a true time-limit truncation would have 1.
+            dones[i] = np.float32(
+                float(np.asarray(next_timestep.discount)) == 0.0
             )
+            next_timesteps.append(next_timestep)
 
-            violation = (
-                constraints.A @ action_jax
-                - constraints.b
-            )
-
-            print("====== CIL debug ======")
-            print("step:", num_total_steps)
-            print("action:", action)
-            print(
-                "A action - b:",
-                np.asarray(violation),
-            )
-            print(
-                "max violation:",
-                float(jnp.max(violation)),
-            )
-
-            if action.shape[0] >= 1:
-                print(
-                    "thrust:",
-                    float(action[0]),
-                )
-
-        # --------------------------------------------------------------
-        # Step training environment
-        # --------------------------------------------------------------
-        next_train_timestep = environment.step(action)
-        num_total_steps += 1
-
-        # --------------------------------------------------------------
-        # Correct terminal/truncation handling
-        # --------------------------------------------------------------
-        #
-        # dm_env semantics used by the current QuadrotorEnv:
-        #
-        #   ground/ceiling termination:
-        #       last=True, discount=0
-        #
-        #   time-limit truncation:
-        #       last=True, discount=1
-        #
-        # Q bootstrapping must stop only for true physical termination.
-        #
-        timestep_discount = float(
-            np.asarray(next_train_timestep.discount)
+        agent.buffer.store_batch(
+            observations,
+            actions,
+            rewards,
+            next_observations,
+            dones,
         )
 
-        true_terminal = bool(
-            timestep_discount == 0.0
-        )
+        for i, (env, next_timestep) in enumerate(
+            zip(active_envs, next_timesteps)
+        ):
+            timesteps[i] = env.reset() if next_timestep.last() else next_timestep
 
-        # --------------------------------------------------------------
-        # Store transition
-        # --------------------------------------------------------------
-        agent.buffer.store(
-            np.asarray(
-                train_observation,
-                dtype=np.float32,
-            ),
-            action,
-            float(next_train_timestep.reward),
-            np.asarray(
-                next_train_timestep.observation,
-                dtype=np.float32,
-            ),
-            true_terminal,
-        )
+        previous_total_steps = num_total_steps
+        num_total_steps += active_count
 
-        nb_up_transitions += 1
+        # Count only update boundaries crossed after update_after.  This is
+        # the vectorized equivalent of PS2-RL's integer-boundary formula and
+        # avoids incorrectly replaying all intervals accumulated before the
+        # learner was allowed to start.
+        update_after = int(min_buffer_capacity)
+        interval = int(nb_updated_transitions)
+        lower = max(previous_total_steps + 1, update_after)
+        if len(agent.buffer) >= int(batch_size) and num_total_steps >= lower:
+            due_updates = (
+                num_total_steps // interval
+                - (lower - 1) // interval
+            )
+        else:
+            due_updates = 0
 
-        # --------------------------------------------------------------
-        # Agent update
-        # --------------------------------------------------------------
-        buffer_ready = (
-            agent.buffer.__len__()
-            >= min_buffer_capacity
-        )
-
-        update_ready = (
-            nb_up_transitions
-            >= nb_updated_transitions
-        )
-
-        if buffer_ready and update_ready:
-            nb_up_transitions = 0
-
-            for _ in range(number_updates):
-                transitions = agent.buffer.sample(
-                    batch_size
-                )
-
-                rng, update_key = jax.random.split(
-                    rng,
-                    2,
-                )
-
+        for _ in range(int(due_updates)):
+            for _ in range(int(number_updates)):
+                transitions = agent.buffer.sample(int(batch_size))
+                rng, update_key = jax.random.split(rng, 2)
                 learner_state, logs = agent.update_fn(
                     learner_state,
                     transitions,
                     update_key,
                 )
-
                 for metric_name, metric_value in logs.items():
-                    # Keep the existing values usable by np.mean().
-                    all_logs[metric_name].append(
-                        np.asarray(metric_value)
-                    )
+                    value = np.asarray(metric_value)
 
-        # --------------------------------------------------------------
-        # Advance or reset training environment
-        # --------------------------------------------------------------
-        #
-        # This uses last(), not true_terminal, because both timeout and
-        # collision require a new environment episode.
-        if next_train_timestep.last():
-            train_timestep = environment.reset()
-        else:
-            train_timestep = next_train_timestep
+                    # Store only a scalar diagnostic, never a batch/vector array.
+                    if value.size == 0:
+                        scalar_value = float("nan")
+                    else:
+                        scalar_value = float(np.mean(value))
 
-        # --------------------------------------------------------------
-        # Training metric output
-        # --------------------------------------------------------------
-        if (
-            verbose
-            and num_total_steps % verbose_frequency == 0
-        ):
-            if buffer_ready and len(all_logs) > 0:
-                for metric_name, metric_history in all_logs.items():
-                    if len(metric_history) == 0:
-                        continue
+                    recent_logs[metric_name].append(scalar_value)
 
-                    recent_values = metric_history[
-                        -verbose_frequency:
-                    ]
-
-                    mean_metric = float(
-                        np.mean(recent_values)
-                    )
+        if next_verbose_step is not None and num_total_steps >= next_verbose_step:
+            if recent_logs:
+                for metric_name, history in recent_logs.items():
+                    mean_value = float(np.mean(history))
 
                     print(
-                        f"Mean value in last "
-                        f"{verbose_frequency} logged updates "
-                        f"for {metric_name}: "
-                        f"{mean_metric}"
+                        "Mean value in last 100 logged updates for "
+                        f"{metric_name}: {mean_value}"
                     )
+
+                    # Save one aggregated point per logging interval,
+                    # instead of every learner update.
+                    all_logs[metric_name].append(mean_value)
             else:
                 print(
-                    f"Filling buffer: "
-                    f"{agent.buffer.__len__()}/"
+                    f"Filling buffer: {len(agent.buffer)}/"
                     f"{min_buffer_capacity}"
                 )
+            print(f"nb of transitions: {num_total_steps}\n")
+            while next_verbose_step <= num_total_steps:
+                next_verbose_step += int(verbose_frequency)
 
-            print(
-                f"nb of steps: {num_total_steps}\n"
+        if next_eval_step is not None and num_total_steps >= next_eval_step:
+            mean_return, rng = _evaluate(
+                eval_environment=eval_environment,
+                agent=agent,
+                learner_state=learner_state,
+                rng=rng,
+                eval_episodes=int(eval_episodes),
+                step_label=num_total_steps,
             )
+            eval_rewards.append(mean_return)
+            while next_eval_step <= num_total_steps:
+                next_eval_step += int(eval_frequency)
 
-        # --------------------------------------------------------------
-        # Deterministic evaluation
-        # --------------------------------------------------------------
-        if (
-            eval_frequency > 0
-            and num_total_steps % eval_frequency == 0
-        ):
-            episode_returns = []
-
-            for episode_idx in range(eval_episodes):
-                # IMPORTANT:
-                # Never assign this to train_timestep.
-                eval_timestep = eval_environment.reset()
-
-                episode_return = 0.0
-                episode_length = 0
-
-                episode_actions = []
-                episode_states = [
-                    np.asarray(
-                        eval_timestep.observation,
-                        dtype=np.float32,
-                    )
-                ]
-
-                while not eval_timestep.last():
-                    # The deterministic branch does not sample noise.
-                    # A valid key is still supplied for consistent typing.
-                    rng, eval_action_key = jax.random.split(
-                        rng,
-                        2,
-                    )
-
-                    eval_action = agent.get_action(
-                        eval_action_key,
-                        learner_state.params.policy,
-                        eval_timestep.observation,
-                        deterministic=True,
-                    )
-
-                    eval_action = np.asarray(
-                        eval_action,
-                        dtype=np.float32,
-                    )
-
-                    eval_timestep = (
-                        eval_environment.step(
-                            eval_action
-                        )
-                    )
-
-                    episode_return += float(
-                        eval_timestep.reward
-                    )
-
-                    episode_length += 1
-
-                    episode_actions.append(
-                        eval_action.copy()
-                    )
-
-                    episode_states.append(
-                        np.asarray(
-                            eval_timestep.observation,
-                            dtype=np.float32,
-                        )
-                    )
-
-                episode_returns.append(
-                    episode_return
-                )
-
-                episode_states = np.asarray(
-                    episode_states,
-                    dtype=np.float32,
-                )
-
-                if len(episode_actions) > 0:
-                    episode_actions = np.asarray(
-                        episode_actions,
-                        dtype=np.float32,
-                    )
-
-                    initial_action = (
-                        episode_actions[0]
-                    )
-
-                    mean_action = np.mean(
-                        episode_actions,
-                        axis=0,
-                    )
-
-                    min_action = np.min(
-                        episode_actions,
-                        axis=0,
-                    )
-
-                    max_action = np.max(
-                        episode_actions,
-                        axis=0,
-                    )
-                else:
-                    initial_action = None
-                    mean_action = None
-                    min_action = None
-                    max_action = None
-
-                mean_reward_per_step = (
-                    episode_return
-                    / max(episode_length, 1)
-                )
-
-                final_state = episode_states[-1]
-                final_z = float(final_state[2])
-
-                z_min = float(
-                    np.min(episode_states[:, 2])
-                )
-
-                z_max = float(
-                    np.max(episode_states[:, 2])
-                )
-
-                velocity_norms = np.linalg.norm(
-                    episode_states[:, 3:6],
-                    axis=1,
-                )
-
-                max_velocity_norm = float(
-                    np.max(velocity_norms)
-                )
-
-                termination_reason = getattr(
-                    eval_environment,
-                    "_termination_reason",
-                    None,
-                )
-
-                print(
-                    f"Eval episode {episode_idx}: "
-                    f"return={episode_return:.6f}, "
-                    f"length={episode_length}, "
-                    f"mean_reward="
-                    f"{mean_reward_per_step:.6f}, "
-                    f"final_z={final_z:.6f}, "
-                    f"reason={termination_reason}"
-                )
-
-                print(
-                    f"  z min/max: "
-                    f"{z_min:.6f} / {z_max:.6f}"
-                )
-
-                print(
-                    f"  max velocity norm: "
-                    f"{max_velocity_norm:.6f}"
-                )
-
-                print(
-                    f"  final state: "
-                    f"{final_state}"
-                )
-
-                if initial_action is not None:
-                    print(
-                        f"  initial action: "
-                        f"{initial_action}"
-                    )
-
-                    print(
-                        f"  mean action: "
-                        f"{mean_action}"
-                    )
-
-                    print(
-                        f"  action min: "
-                        f"{min_action}"
-                    )
-
-                    print(
-                        f"  action max: "
-                        f"{max_action}"
-                    )
-
-            mean_evaluation_return = float(
-                np.mean(episode_returns)
-            )
-
-            eval_rewards.append(
-                mean_evaluation_return
-            )
-
-            print(
-                f"Evaluation after "
-                f"{num_total_steps} steps: "
-                f"{mean_evaluation_return}"
-            )
-
-            print(
-                "All rewards:",
-                episode_returns,
-            )
-
-    return (
-        eval_rewards,
-        all_logs,
-        num_total_steps,
-        learner_state,
-    )
+    return eval_rewards, all_logs, num_total_steps, learner_state
