@@ -1,8 +1,10 @@
 __pycache__/
+/__pycache__/
 *.py[cod]
 /experiments/
 /terminal_logs/
 *.tar.gz
+*.pyc
 
 # Generated model artifacts
 /Trained Models/*
