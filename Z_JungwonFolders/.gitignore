@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+/experiments/
+/terminal_logs/
+*.tar.gz
+
+# Generated model artifacts
+/Trained Models/*
+!/Trained Models/.gitkeep
+
+# Generated evaluation artifacts
+/evaluation/LQR Evaluation/*
+!/evaluation/LQR Evaluation/.gitkeep
+/evaluation/Training Progress/*
+!/evaluation/Training Progress/.gitkeep
+/evaluation/TD3 Evaluation RK45/*
+!/evaluation/TD3 Evaluation RK45/.gitkeep
+/evaluation/TD3 Evaluation Official/*
+!/evaluation/TD3 Evaluation Official/.gitkeep
+/evaluation/A-B Constraint Evaluation/*
+!/evaluation/A-B Constraint Evaluation/.gitkeep

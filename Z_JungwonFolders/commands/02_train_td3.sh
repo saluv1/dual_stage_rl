@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+cd "$PROJECT_ROOT"
+SEED="${SEED:-2}"
+MAX_TIMESTEPS="${MAX_TIMESTEPS:-5000000}"
+START_TIMESTEPS="${START_TIMESTEPS:-5000}"
+UPDATE_AFTER="${UPDATE_AFTER:-2000}"
+UPDATE_EVERY="${UPDATE_EVERY:-8}"
+EVAL_FREQ="${EVAL_FREQ:-5000}"
+EVAL_EPISODES_PER_REGION="${EVAL_EPISODES_PER_REGION:-64}"
+BATCH_SIZE="${BATCH_SIZE:-128}"
+ARGS=(
+  --experiment-root "Trained Models"
+  --evaluation-root "evaluation"
+  --reset-library "official_phase1_evaluation/assets/reset_library.pkl"
+  --seed "$SEED"
+  --max-timesteps "$MAX_TIMESTEPS"
+  --start-timesteps "$START_TIMESTEPS"
+  --update-after "$UPDATE_AFTER"
+  --update-every "$UPDATE_EVERY"
+  --eval-freq "$EVAL_FREQ"
+  --eval-episodes-per-region "$EVAL_EPISODES_PER_REGION"
+  --batch-size "$BATCH_SIZE"
+  --max-episode-steps "${MAX_EPISODE_STEPS:-100}"
+  --success-horizon-steps "${SUCCESS_HORIZON_STEPS:-100}"
+  --expl-noise "${EXPL_NOISE:-0.10}"
+  --expl-noise-clip "${EXPL_NOISE_CLIP:-0.10}"
+  --discount "${BETA:-0.99}"
+  --tau "${TAU:-0.0025}"
+  --action-penalty "${ACTION_PENALTY:-0.05}"
+)
+[[ -n "${RUN_INDEX:-}" ]] && ARGS+=(--run-index "$RUN_INDEX")
+[[ "${SKIP_SAMPLER_INSPECTION:-0}" == "1" ]] && ARGS+=(--skip-sampler-inspection)
+python3 -m backup_policy.train_modular "${ARGS[@]}"

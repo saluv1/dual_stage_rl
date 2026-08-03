@@ -18,10 +18,9 @@ flow sensitivity Psi = dPhi/dx is not classically defined for trajectories
 that cross dB (you would need a saltation matrix).  Every BCBF result
 (Chen et al. [13], Thm. 1-3) assumes a locally Lipschitz backup policy.
 
-So `mode="blend"` is the default here: pi_B is used *exactly* on B (so base-set
-invariance is untouched), and pi_SA is blended in over a thin shell
-h_B in [-eps, 0) with a C^1 smoothstep.  `mode="hard"` reproduces Eq. (8)
-literally if you want to compare.
+The released implementation uses the literal hard handoff.  ``mode="hard"``
+is therefore the default.  ``mode="blend"`` is retained only as an optional
+research ablation and is not used by the six-command workflow.
 """
 
 from typing import NamedTuple
@@ -143,7 +142,7 @@ def _smoothstep(s):
     return s * s * (3.0 - 2.0 * s)
 
 
-def pi_b(x, ctx: BackupContext, mode="blend", eps=0.5):
+def pi_b(x, ctx: BackupContext, mode="hard", eps=0.5):
     """
     Composed backup policy.
 
@@ -165,7 +164,7 @@ def pi_b(x, ctx: BackupContext, mode="blend", eps=0.5):
     return sigma * u_base + (1.0 - sigma) * u_arr
 
 
-def make_closed_loop(ctx: BackupContext, mode="blend", eps=0.5):
+def make_closed_loop(ctx: BackupContext, mode="hard", eps=0.5):
     """Return f_pi_b(x) = f(x) + g(x) pi_b(x)."""
     from .dynamics_jax import f_x, g_x
 
