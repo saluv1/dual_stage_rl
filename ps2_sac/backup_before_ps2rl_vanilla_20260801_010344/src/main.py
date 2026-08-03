@@ -388,65 +388,39 @@ def main(argv):
 
     elif config.env_idx == 4:
         environment_kwargs = {
-            "horizon": int(getattr(config, "horizon", 111)),
-            "include_time_features": bool(
-                getattr(config, "include_time_features", True)
+            "horizon": int(
+                getattr(config, "horizon", 106)
             ),
-            "max_steps_extra_sec": float(
-                getattr(config, "max_steps_extra_sec", 0.1)
+            "include_progress": bool(
+                getattr(config, "include_progress", True)
             ),
             "initial_position_noise": float(
                 getattr(config, "initial_position_noise", 0.1)
             ),
             "perturb_evaluation": bool(
-                getattr(config, "perturb_evaluation", True)
+                getattr(config, "perturb_evaluation", False)
             ),
             "terminate_on_ceiling": bool(
                 getattr(config, "terminate_on_ceiling", False)
             ),
-            "z_max": float(getattr(config, "z_max", 15.0)),
             "use_cpp_body_rate_reference": bool(
-                getattr(config, "use_cpp_body_rate_reference", False)
-            ),
-            "dt": float(getattr(config, "dt", 0.02)),
-            "w_pos_xy": float(getattr(config, "w_pos_xy", 2.5)),
-            "w_pos_z": float(getattr(config, "w_pos_z", 2.0)),
-            "w_vel": float(getattr(config, "w_vel", 4.0)),
-            "w_att": float(getattr(config, "w_att", 16.0)),
-            "w_ref_omega_x": float(
-                getattr(config, "w_ref_omega_x", 0.10)
-            ),
-            "w_ref_omega_y": float(
-                getattr(config, "w_ref_omega_y", 0.20)
-            ),
-            "w_ref_omega_z": float(
-                getattr(config, "w_ref_omega_z", 0.05)
-            ),
-            "w_control_a": float(
-                getattr(config, "w_control_a", 0.01)
-            ),
-            "w_control_omega": float(
-                getattr(config, "w_control_omega", 0.01)
+                getattr(
+                    config,
+                    "use_cpp_body_rate_reference",
+                    False,
+                )
             ),
         }
 
-        num_envs = int(getattr(config, "num_envs", 32))
-        if num_envs <= 0:
-            raise ValueError("config.num_envs must be positive.")
-        train_envs = [
-            environment(
-                for_evaluation=False,
-                seed=FLAGS.seed + env_index,
-                **environment_kwargs,
-            )
-            for env_index in range(num_envs)
-        ]
-        # Keep ``env`` as the representative instance used to build specs and
-        # preserve the rest of dual_stage_rl's existing main.py structure.
-        env = train_envs[0]
+        env = environment(
+            for_evaluation=False,
+            seed=FLAGS.seed,
+            **environment_kwargs,
+        )
+
         eval_env = environment(
             for_evaluation=True,
-            seed=FLAGS.seed + 100_000,
+            seed=FLAGS.seed + 1,
             **environment_kwargs,
         )
 
@@ -474,9 +448,6 @@ def main(argv):
         if hasattr(eval_env, "_env"):
             eval_env._env.seed(seed=FLAGS.seed + 1)
 
-    training_environment = (
-        train_envs if config.env_idx == 4 else env
-    )
     environment_spec = acme.make_environment_spec(env)
 
     rng, key = jax.random.split(rng, 2)
@@ -508,8 +479,7 @@ def main(argv):
     print("scale_reward:", config.scale_reward)
     print("actor lr:", config.p_lr)
     print("critic lr:", config.q_lr)
-    print("value lr (legacy/unused):", getattr(config, "v_lr", None))
-    print("parallel training environments:", len(training_environment) if isinstance(training_environment, list) else 1)
+    print("value lr:", config.v_lr)
     model = SAC(
         key,
         environment_spec,
@@ -570,16 +540,19 @@ def main(argv):
             saved_learner_state.params,
         )
 
-        # Warm-start the current twin-Q SAC parameter state while
-        # intentionally reinitializing all optimizer moments.
+        # Warm-start network parameters, but reset Adam states.
         initial_learner_state = LearnerState(
             params=ParamState(
-                policy=saved_learner_state.params.policy,
                 q1=saved_learner_state.params.q1,
                 q2=saved_learner_state.params.q2,
-                q1_target=saved_learner_state.params.q1_target,
-                q2_target=saved_learner_state.params.q2_target,
-                log_alpha=saved_learner_state.params.log_alpha,
+                v=saved_learner_state.params.v,
+                policy=saved_learner_state.params.policy,
+                v_target=saved_learner_state.params.v_target,
+
+                # Phase II temperature starts again at alpha0=0.2.
+                log_alpha=(
+                    fresh_learner_state.params.log_alpha
+                ),
             ),
             opt_state=fresh_learner_state.opt_state,
         )
@@ -597,7 +570,7 @@ def main(argv):
             "training from fresh parameters."
         )
     # Call training of SAC agent
-    eval_rewards, all_logs, num_total_steps, learner_state = train( environment = training_environment,
+    eval_rewards, all_logs, num_total_steps, learner_state = train( environment = env,
                       eval_environment=eval_env,
                       agent = model,
                       rng = rng,
@@ -612,7 +585,6 @@ def main(argv):
                       eval_frequency=config.eval_frequency,
                       eval_episodes=config.eval_episodes,
                       initial_learner_state=initial_learner_state,
-                      numpy_seed=FLAGS.seed,
                       )
 
 

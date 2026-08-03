@@ -46,7 +46,15 @@ python -m src.main \
   --experiment=quadrotor_cil_debug \
   --verbose=True
 ```
-
+-new version of training ps2_sac (change: sac model architecture is based on ps2_rl, also parameters)
+```
+python -m src.main \
+  --config=src/configs/quadrotor_powerloop_vanilla.py \
+  --save_pth=results \
+  --experiment=quad_vanilla_ps2rl \
+  --seed=1 \
+  --verbose=true
+```
 A. 물리 시스템
 1. dynamics.py
 2. constraints.py
