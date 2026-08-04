@@ -1,34 +1,36 @@
-# Python bytecode and cache
+# Virtual environments
+.venv/
+.venv_phase2/
+.venv_phase2*/
+venv/
+venv_phase2/
+env/
+*.venv/
+
+# Python bytecode / caches
 __pycache__/
 *.py[cod]
 *$py.class
-
-# Python virtual environments
-.venv/
-venv/
-venv*/
-env/
-
-# Test and tool caches
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .ipynb_checkpoints/
 
-# Python build artifacts
+# Build artifacts
 build/
 dist/
 *.egg-info/
 
-# Local environment variables
+# Local env vars / logs
 .env
-
-# Logs
 *.log
 
 # OS files
 .DS_Store
 Thumbs.db
 
-# Experiments folder in Z_JungwonFolders
-experiments/
+# Large experiment artifacts (keep source, not outputs)
+Z_JungwonFolders.zip
+Z_JungwonFolders/evaluation/**/*.npz
+*.before_*
+*.phase2_stable
