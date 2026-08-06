@@ -18,9 +18,9 @@ from .state_action import compute_bfc
 # The paper/checkpoint selection emphasizes the difficult trace regions.
 MU_SA_WEIGHTS = {
     "general_trace": 1.0,
-    "near_ceiling": 2.5,
-    "bridge": 3.0,
-    "base_shell": 0.75,
+    "near_ceiling": 2.0,
+    "bridge": 2.5,
+    "base_shell": 1.0,
 }
 
 DEFAULT_RESET_LIBRARY = (
