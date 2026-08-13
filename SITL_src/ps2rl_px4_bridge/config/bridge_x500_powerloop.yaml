@@ -1,0 +1,41 @@
+/ps2rl_px4_bridge:
+  ros__parameters:
+    ps2rl_path: "/home/dev/ws_shared/PS2-RL"
+    run_dir: "/home/dev/ws_shared/PS2-RL/checkpoints/deployed_ps2/quadrotor_ps2_learned"
+    checkpoint: "best"
+    learned_backup_policy_path: ""
+    reference_path: "/home/dev/ws_shared/PS2-RL/ps2rl/envs/assets/quadrotor_powerloop_reference.npz"
+    jax_platform: "cpu"
+    jax_single_thread: true
+
+    policy_rate: 50.0
+    policy_timer_oversample: 1.0
+    setpoint_rate: 50.0
+
+    thrust_model: "quadratic"
+    hover_thrust: 0.178
+    thrust_k0: -0.940572
+    thrust_k1: 34.359792
+    thrust_k2: 140.163116
+    thrust_min: 0.02
+    thrust_max: 1.0
+
+    origin_offset_enu: [0.0, 0.0, 0.0]
+    takeoff_altitude: 2.5
+    lineup_distance: 10.0
+    lineup_position_tol: 0.35
+    lineup_settle_time: 3.0
+    dash_speed_tol: 0.15
+    dash_tilt_tol_deg: 4.0
+    dash_pos_tol: 0.10
+    dash_accel: 3.0
+    dash_timeout: 15.0
+    recover_altitude: 3.0
+    recover_time: 4.0
+
+    z_abort_margin: 1.0
+    arena_radius: 40.0
+    odom_timeout: 0.30
+    auto_start: true
+
+    log_csv: "/tmp/ps2rl_flight.csv"
