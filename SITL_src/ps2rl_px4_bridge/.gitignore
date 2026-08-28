@@ -1,0 +1,8 @@
+# Python test/runtime artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local package-level experiment output overrides
+experiments/
+*.csv

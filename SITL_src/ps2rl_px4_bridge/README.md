@@ -198,3 +198,102 @@ ps2rl_px4_bridge/
 
 이 패키지는 **SITL 검증용**입니다. 실기체에 올리기 전에 추력 캘리브레이션,
 rate 루프 튜닝, 안전집합 마진, 그리고 충분한 시뮬레이션 로그 분석을 먼저 끝내세요.
+
+---
+
+## Nominal policy vs delay-trained policy
+
+The original nominal path remains unchanged.  A run whose ``configs.json`` has
+no augmented ``delay_cfg`` continues to use the original 26D observation.  A
+delay-aware run is enabled only when its saved configuration declares history
+or preview fields and the actor's first-layer input dimension matches the
+resulting observation exactly.
+
+The supplied delay checkpoint uses:
+
+```text
+26 core values + 5 previous commands x 4 = 46 values
+```
+
+At policy handover the command history is initialized to five hover commands
+``[9.81, 0, 0, 0]``.  Observation ``k`` contains commands only through
+``u[k-1]``; the command selected at ``k`` is appended after inference, matching
+the training environment.
+
+### Checkpoint placement
+
+Keep the two policies in separate persistent directories:
+
+```text
+/home/dev/ws_shared/PS2-RL/checkpoints/deployed_ps2/quadrotor_ps2_learned/
+/home/dev/ws_shared/PS2-RL/checkpoints/sitl_delay_comparison/policies/delay_d5_j2_h5_seed4/
+```
+
+The delay directory needs ``configs.json`` and the selected weights file.  The
+recommended first SITL trial uses ``final_weights.pkl`` because that checkpoint
+had the better saved tracking score.
+
+Rebuild after applying the source changes:
+
+```bash
+cd ~/ws_shared
+colcon build --packages-select ps2rl_px4_bridge --base-paths src
+source ~/ws_shared/install/setup.bash
+```
+
+### Organized nominal run
+
+With MicroXRCEAgent and ``gz_x500_powerloop`` already running:
+
+```bash
+deactivate 2>/dev/null
+source /opt/ros/jazzy/setup.bash
+source ~/ws_shared/install/setup.bash
+
+python3 ~/ws_shared/dual_stage_rl/SITL_src/ps2rl_px4_bridge/run_sitl_experiment.py \
+  --label nominal \
+  --config ~/ws_shared/dual_stage_rl/SITL_src/ps2rl_px4_bridge/config/bridge_x500_powerloop.yaml \
+  --run-dir ~/ws_shared/PS2-RL/checkpoints/deployed_ps2/quadrotor_ps2_learned \
+  --checkpoint best
+```
+
+### Organized delay-policy run
+
+```bash
+deactivate 2>/dev/null
+source /opt/ros/jazzy/setup.bash
+source ~/ws_shared/install/setup.bash
+
+python3 ~/ws_shared/dual_stage_rl/SITL_src/ps2rl_px4_bridge/run_sitl_experiment.py \
+  --label delay_d5_j2_h5_seed4 \
+  --config ~/ws_shared/dual_stage_rl/SITL_src/ps2rl_px4_bridge/config/bridge_x500_powerloop_delay.yaml \
+  --run-dir ~/ws_shared/PS2-RL/checkpoints/sitl_delay_comparison/policies/delay_d5_j2_h5_seed4 \
+  --checkpoint final
+```
+
+After the vehicle lands, press Ctrl-C once.  The wrapper then runs the existing
+analysis and plotting tools.  Each trial is stored under:
+
+```text
+/home/dev/ws_shared/experiments/ps2rl_sitl/<timestamp>-<label>/
+├── run_metadata.json
+├── bridge_config.yaml
+├── bridge.log
+├── flight.csv
+├── analysis.txt
+├── plot.log
+├── policy/
+│   ├── configs.json
+│   └── summary.json          # when present
+└── plots/
+    ├── trajectory.png
+    └── trajectory_cil.png
+```
+
+The previous direct launch command is still supported.  It does not perform
+automatic artifact organization or post-processing:
+
+```bash
+ros2 launch ps2rl_px4_bridge ps2rl_sitl.launch.py \
+  config:=~/ws_shared/dual_stage_rl/SITL_src/ps2rl_px4_bridge/config/bridge_x500_powerloop.yaml
+```

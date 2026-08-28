@@ -33,6 +33,7 @@ from __future__ import annotations
 import csv
 from enum import Enum, auto
 import math
+from pathlib import Path
 import threading
 import time
 
@@ -260,7 +261,7 @@ class PS2RLBridge(Node):
             VehicleStatus, "/fmu/out/vehicle_status_v1", self._on_status, qos_sub, callback_group=cb_sub
         )
         self.create_subscription(
-            VehicleStatus, "/fmu/out/vehicle_status", self._on_status, qos_sub, callback_group=cb_sub
+            VehicleStatus, "/fmu/out/vehicle_status_v1", self._on_status, qos_sub, callback_group=cb_sub
         )
         if _HAS_FAILSAFE_FLAGS:
             self.create_subscription(
@@ -331,7 +332,9 @@ class PS2RLBridge(Node):
         self._csv = None
         log_csv = str(self.get_parameter("log_csv").value).strip()
         if log_csv:
-            self._csv_file = open(log_csv, "w", newline="", encoding="utf-8")
+            log_path = Path(log_csv).expanduser()
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            self._csv_file = open(log_path, "w", newline="", encoding="utf-8")
             self._csv = csv.writer(self._csv_file)
             self._csv.writerow(
                 [
@@ -959,6 +962,11 @@ class PS2RLBridge(Node):
                 # Schedule the first step at t = 0, then every dt from there.
                 self._last_policy_px4_t = self.policy_t0 - self.policy.dt
                 self._policy_wall_t0 = self.wall_s()
+            # Delay-aware actors expect the training-time episode initialisation:
+            # state history starts at the captured handover state and commanded-
+            # action history starts at hover.  Nominal actors have zero-length
+            # histories, so this call leaves their behavior unchanged.
+            self.policy.reset_history(x)
             self.entry_dev_pos, self.entry_dev_speed, self.entry_dev_tilt = (
                 pos_err, speed_err, tilt
             )

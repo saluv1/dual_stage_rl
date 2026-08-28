@@ -1,4 +1,4 @@
-"""Load a trained PS2-RL Phase-2 checkpoint and run it (through the CIL) online.
+"""Load a trained PS2-RL Phase-2 checkpoint and run it online.
 
 This mirrors what ``ps2rl/evaluation/quadrotor_p2_eval.py`` does to rebuild a
 run, but for a single state at a time driven by wall-clock time instead of a
@@ -7,14 +7,15 @@ batched ``lax.scan`` rollout.
 Two things are deliberately kept identical to training, because getting either
 wrong silently degrades the policy:
 
-1. **The observation layout.**  ``[x(10), ref_state(10), ref_omega(3), t,
-   sin(phase), cos(phase)]`` — 26D with ``include_time_features``.  The
-   reference is interpolated at ``t / reference_dt`` and clipped at both ends,
-   exactly as ``QuadrotorEnvConfig`` does.
+1. **The observation layout.**  Nominal runs keep the original
+   ``[x(10), ref_state(10), ref_omega(3), t, sin(phase), cos(phase)]`` layout.
+   Delay-aware runs read the top-level ``delay_cfg`` saved by training and
+   append state history, commanded-action history and reference preview in the
+   same order as ``quadrotor_delay_env.py``.
 
-2. **The CIL projection.**  ``eval_action`` runs the actor *and* the BCBF-QP.
-   Skipping the projection at deploy time throws away the entire safety
-   argument of the method, so there is no option to disable it here.
+2. **The action path.**  ``eval_action`` honors the saved SAC configuration.
+   PS2/CIL checkpoints run their configured BCBF-QP; vanilla checkpoints with
+   ``use_projection=false`` remain unprojected, exactly as during evaluation.
 """
 
 from __future__ import annotations
@@ -46,6 +47,65 @@ class PolicyOutput:
     slack: float              # QP slack: > 0 means the safety row was relaxed
     projected_norm: float     # ||u_safe - u_raw||, how hard the CIL intervened
     latency_s: float
+
+
+@dataclass(frozen=True)
+class DelayObservationConfig:
+    """Observation-only subset of ``QuadrotorDelayConfig``.
+
+    Environment-side delay and noise values are retained for diagnostics, but
+    the SITL bridge does not inject artificial delay.  Its job is to reproduce
+    the actor input layout used during training.
+    """
+
+    act_delay_steps: int = 0
+    obs_delay_steps: int = 0
+    obs_noise_std: float = 0.0
+    act_delay_jitter: int = 0
+    hist_state_len: int = 0
+    hist_action_len: int = 0
+    ref_preview_len: int = 0
+    ref_preview_stride: int = 1
+    ref_preview_relative: bool = True
+    cil_state_mode: str = "delayed"
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any] | None) -> "DelayObservationConfig":
+        raw = payload or {}
+        valid = {name for name in cls.__dataclass_fields__}
+        cfg = cls(**{key: value for key, value in raw.items() if key in valid})
+        for name in (
+            "act_delay_steps",
+            "obs_delay_steps",
+            "act_delay_jitter",
+            "hist_state_len",
+            "hist_action_len",
+            "ref_preview_len",
+        ):
+            if int(getattr(cfg, name)) < 0:
+                raise ValueError(f"delay_cfg.{name} must be >= 0")
+        if int(cfg.ref_preview_stride) < 1:
+            raise ValueError("delay_cfg.ref_preview_stride must be >= 1")
+        if float(cfg.obs_noise_std) < 0.0:
+            raise ValueError("delay_cfg.obs_noise_std must be >= 0")
+        return cfg
+
+    @property
+    def has_augmented_observation(self) -> bool:
+        return bool(self.hist_state_len or self.hist_action_len or self.ref_preview_len)
+
+    def extra_obs_dim(self) -> int:
+        return 10 * int(self.hist_state_len) + 4 * int(self.hist_action_len) + 13 * int(
+            self.ref_preview_len
+        )
+
+    def summary(self) -> str:
+        return (
+            f"act_delay={int(self.act_delay_steps)}"
+            f"+/-{int(self.act_delay_jitter)} obs_delay={int(self.obs_delay_steps)} "
+            f"hist_state={int(self.hist_state_len)} hist_action={int(self.hist_action_len)} "
+            f"preview={int(self.ref_preview_len)}x{int(self.ref_preview_stride)}"
+        )
 
 
 class PS2RLPolicy:
@@ -109,7 +169,25 @@ class PS2RLPolicy:
         with open(cfg_path, "r", encoding="utf-8") as f:
             cfg_json = json.load(f)
 
-        self.sac_cfg = self._dataclass_from_dict(SACConfig, cfg_json.get("sac", {}))
+        self.delay_obs_cfg = DelayObservationConfig.from_dict(cfg_json.get("delay_cfg"))
+
+        sac_payload = cfg_json.get("sac", {})
+        self.sac_cfg = self._dataclass_from_dict(SACConfig, sac_payload)
+        # Older PS2-RL checkouts did not expose ``use_projection`` and would
+        # silently deploy a vanilla checkpoint through the CIL.  Refuse that
+        # policy mismatch instead of changing the controller being evaluated.
+        if "use_projection" in sac_payload:
+            if not hasattr(self.sac_cfg, "use_projection"):
+                raise RuntimeError(
+                    "This checkpoint records sac.use_projection, but the installed "
+                    "PS2-RL trainer core predates that option. Install the matching "
+                    "quadrotor_ps2_trainer.py and ps2_trainer_core.py before SITL."
+                )
+            if bool(self.sac_cfg.use_projection) != bool(sac_payload["use_projection"]):
+                raise RuntimeError(
+                    "Installed PS2-RL did not preserve the checkpoint's "
+                    "sac.use_projection setting. Refusing to run a different policy."
+                )
         env_overrides: dict[str, Any] = {}
         if reference_path:
             env_overrides["reference_path"] = str(Path(reference_path).expanduser().resolve())
@@ -156,12 +234,20 @@ class PS2RLPolicy:
         self.a_cmd_max = float(self.cbf_cfg.a_cmd_max)
         self.omega_max = float(self.cbf_cfg.omega_max)
 
-        obs_dim = 23 + (3 if self.include_time_features else 0)
-        actor_obs_dim = self._infer_actor_obs_dim(actor_params) or obs_dim
-        if actor_obs_dim > obs_dim:
+        base_obs_dim = 23 + (3 if self.include_time_features else 0)
+        augmented_obs_dim = base_obs_dim + self.delay_obs_cfg.extra_obs_dim()
+        actor_obs_dim = self._infer_actor_obs_dim(actor_params) or augmented_obs_dim
+        if self.delay_obs_cfg.has_augmented_observation:
+            if actor_obs_dim != augmented_obs_dim:
+                raise ValueError(
+                    f"Actor expects obs_dim={actor_obs_dim}, but configs.json delay_cfg "
+                    f"produces {augmented_obs_dim} ({base_obs_dim} core + "
+                    f"{self.delay_obs_cfg.extra_obs_dim()} augmented)."
+                )
+        elif actor_obs_dim > base_obs_dim:
             raise ValueError(
-                f"Actor expects obs_dim={actor_obs_dim} but this reference bundle "
-                f"only produces {obs_dim}. Wrong checkpoint or wrong reference?"
+                f"Actor expects obs_dim={actor_obs_dim}, but configs.json has no "
+                f"history/preview features and the nominal observation is {base_obs_dim}D."
             )
         self._actor_obs_dim = int(actor_obs_dim)
 
@@ -183,7 +269,11 @@ class PS2RLPolicy:
         self.entry_state = self._ref_states[0].copy()
         self.exit_state = self._ref_states[-1].copy()
 
+        self.reset_history(self.entry_state)
         self._warmup()
+        # Warm-up calls act() and therefore exercises the exact augmented input
+        # path.  Do not let those synthetic calls leak into the real flight.
+        self.reset_history(self.entry_state)
 
     # ------------------------------------------------------------------ #
     # Loading helpers (mirrors quadrotor_vanilla_eval)                     #
@@ -258,12 +348,62 @@ class PS2RLPolicy:
         phase = 2.0 * math.pi * (idx / float(self._ref_last))
         return ref, omega, math.sin(phase), math.cos(phase)
 
+    def reset_history(self, x: np.ndarray | None = None) -> None:
+        """Reset delay-policy history at episode handover.
+
+        Training seeds commanded-action history with hover and state history
+        with the initial physical state.  Calling this for nominal policies is
+        harmless because both arrays have zero rows.
+        """
+        x0 = self.entry_state if x is None else np.asarray(x, dtype=np.float64)
+        self._state_history = np.tile(
+            np.asarray(x0, dtype=np.float64).reshape(1, 10),
+            (int(self.delay_obs_cfg.hist_state_len), 1),
+        )
+        hover = np.array([float(self.env_cfg.gravity), 0.0, 0.0, 0.0], dtype=np.float64)
+        self._action_history = np.tile(
+            hover.reshape(1, 4),
+            (int(self.delay_obs_cfg.hist_action_len), 1),
+        )
+
+    @staticmethod
+    def _push_history(history: np.ndarray, item: np.ndarray) -> None:
+        if history.shape[0] == 0:
+            return
+        if history.shape[0] > 1:
+            history[:-1] = history[1:]
+        history[-1] = np.asarray(item, dtype=np.float64)
+
+    def _reference_preview(self, x: np.ndarray, t: float) -> np.ndarray:
+        rows = []
+        for k in range(int(self.delay_obs_cfg.ref_preview_len)):
+            offset_steps = (k + 1) * int(self.delay_obs_cfg.ref_preview_stride)
+            ref, omega, _, _ = self.reference_at(t + offset_steps * self.dt)
+            ref = ref.copy()
+            if self.delay_obs_cfg.ref_preview_relative:
+                ref[0:3] -= x[0:3]
+                ref[3:6] -= x[3:6]
+            rows.append(np.concatenate([ref, omega]))
+        return np.concatenate(rows) if rows else np.empty((0,), dtype=np.float64)
+
     def build_obs(self, x: np.ndarray, t: float) -> np.ndarray:
+        x = np.asarray(x, dtype=np.float64).reshape(10)
         ref, omega, s, c = self.reference_at(t)
-        parts = [np.asarray(x, dtype=np.float64), ref, omega]
+        parts = [x, ref, omega]
         if self.include_time_features:
             parts.append(np.array([t, s, c], dtype=np.float64))
+        if self.delay_obs_cfg.hist_state_len:
+            parts.append(self._state_history.reshape(-1))
+        if self.delay_obs_cfg.hist_action_len:
+            parts.append(self._action_history.reshape(-1))
+        if self.delay_obs_cfg.ref_preview_len:
+            parts.append(self._reference_preview(x, t))
         obs = np.concatenate(parts)
+        if obs.size < self._actor_obs_dim:
+            raise ValueError(
+                f"Constructed observation has {obs.size} values but actor expects "
+                f"{self._actor_obs_dim}."
+            )
         return obs[: self._actor_obs_dim].astype(np.float32)
 
     # ------------------------------------------------------------------ #
@@ -271,6 +411,11 @@ class PS2RLPolicy:
     # ------------------------------------------------------------------ #
 
     def act(self, x: np.ndarray, t: float) -> PolicyOutput:
+        # At decision k the state-history block includes x_k, while the action
+        # block contains only commands through u_{k-1}.  Record the current
+        # state before constructing the observation and the selected command
+        # only after inference to preserve that ordering.
+        self._push_history(self._state_history, np.asarray(x, dtype=np.float64))
         obs = self.build_obs(x, t)
         started = time.perf_counter()
         safe, raw, slack = self._eval_action(self._params, self._jnp.asarray(obs))
@@ -278,6 +423,7 @@ class PS2RLPolicy:
         raw = np.asarray(self._jax.device_get(raw), dtype=np.float64)
         slack_f = float(np.asarray(self._jax.device_get(slack)).reshape(-1)[0])
         latency = time.perf_counter() - started
+        self._push_history(self._action_history, safe)
 
         return PolicyOutput(
             u_safe=safe,
@@ -299,6 +445,7 @@ class PS2RLPolicy:
             f"PS2-RL policy ready | obs_dim={self._actor_obs_dim} dt={self.dt:.4f}s "
             f"z_max={self.z_max:.2f}m ref_duration={self.reference_duration:.3f}s "
             f"backup={self.cbf_cfg.backup_policy_mode} "
+            f"delay_obs=({self.delay_obs_cfg.summary()}) "
             f"warm_latency={steady * 1e3:.2f}ms"
         )
         if self._log is not None:
