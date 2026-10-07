@@ -1,0 +1,42 @@
+# Filtered landing on the stock Gazebo x500 (make px4_sitl gz_x500): the hover LQR of the Phase-I
+# backup checkpoint aimed at the pad, passed through the landing safety filter.
+#
+# Every field of FlightConfig (PS2-RL/ps2rl/deploy/landing_flight.py) is also a parameter of this
+# node and can be added below; the ones not listed keep the defaults written there.
+# Relative paths are taken from ps2rl_path.
+/ps2rl_landing:
+  ros__parameters:
+    ps2rl_path: "/home/dev/ws_shared/PS2-RL"
+
+    # ---- controller -------------------------------------------------------------------------
+    backup: "checkpoints/landing_phase1/x500_rec10_td3_seed1"   # Phase-I run: cone, floor, base set, backup policy, action box
+    filter: "alpha=10,alpha_floor=20"     # landing BCBF fields, KEY=VAL separated by ','
+    use_filter: true                      # false: the nominal controller alone (comparison flights only)
+    qp_solve_dtype: "float64"
+    nominal: "lqr_target"                 # "lqr_target" or "track_reference"
+    target: "0,0,-0.1"                    # relative to the pad centre: "pad_centre", "apex" or "x,y,z" [m]
+    max_position_error: 1.0               # the LQR sees at most this position error [m]; 0 = plain re-centred LQR
+    reference_path: ""                    # .npz for "track_reference"
+    jax_platform: "cpu"
+    jax_single_thread: true
+
+    policy_rate: 50.0                     # must match the backup's control step
+    setpoint_rate: 50.0
+
+    # ---- thrust map: a = k2 T^2 + k1 T + k0, measured on the stock x500 (ws_shared/thrust_fit_x500.yaml)
+    thrust_model: "quadratic"
+    thrust_k2: 14.574044
+    thrust_k1: 0.807446
+    thrust_k0: 1.489934
+    hover_thrust: 0.728                   # used by the "linear" model only
+    thrust_min: 0.02
+    thrust_max: 1.0
+
+    # ---- flight -----------------------------------------------------------------------------
+    start_position: "1.65,0,2"            # start of the filtered descent, relative to the pad centre [m]
+    pad_offset: "0,0,0.05"                # pad centre relative to where the vehicle stands before arming [m]
+
+    odom_timeout: 0.30
+    log_root: "/home/dev/ws_shared/experiments/landing"   # each flight gets <log_root>/<time>-<label>/
+    label: "landing"
+    exit_when_done: true
