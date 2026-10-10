@@ -27,6 +27,7 @@ setup(
             "ps2rl_bridge = ps2rl_px4_bridge.bridge_node:main",
             "thrust_calib = ps2rl_px4_bridge.thrust_calib_node:main",
             "ps2rl_landing = ps2rl_px4_bridge.landing_node:main",
+            "ps2rl_cone_obstacle = ps2rl_px4_bridge.cone_obstacle_node:main",
         ],
     },
 )

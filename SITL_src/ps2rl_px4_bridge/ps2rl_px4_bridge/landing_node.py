@@ -130,8 +130,15 @@ def _vector(text: str, name: str) -> tuple:
 
 
 class LandingBridge(Node):
+    # Task-specific pieces, overridden by other tasks' nodes (cone_obstacle_node.py): node name, runtime
+    # parameters, "x,y,z" flight parameters, record label, and the _task_imports / _make_runtime hooks.
+    NODE_NAME = "ps2rl_landing"
+    RUNTIME_PARAMS = RUNTIME_PARAMS
+    VECTOR_PARAMS = VECTOR_PARAMS
+    DEFAULT_LABEL = "landing"
+
     def __init__(self) -> None:
-        super().__init__("ps2rl_landing")
+        super().__init__(self.NODE_NAME)
 
         # ----------------------------- parameters ----------------------- #
         self._defaults: dict = {}
@@ -142,7 +149,7 @@ class LandingBridge(Node):
             self.declare_parameter(name, default, ParameterDescriptor(dynamic_typing=True))
 
         declare("ps2rl_path", "")
-        for name, default in RUNTIME_PARAMS.items():
+        for name, default in self.RUNTIME_PARAMS.items():
             declare(name, default)
         declare("jax_single_thread", True)
 
@@ -161,28 +168,23 @@ class LandingBridge(Node):
         for key, topic in TOPICS.items():
             declare(f"topic_{key}", topic)
         declare("log_root", "")
-        declare("label", "landing")
+        declare("label", self.DEFAULT_LABEL)
         declare("exit_when_done", True)
 
         ps2rl_path = self.param("ps2rl_path")
         self._ps2rl_root = Path(ps2rl_path).expanduser().resolve() if ps2rl_path else None
         if self._ps2rl_root is not None and str(self._ps2rl_root) not in sys.path:
             sys.path.insert(0, str(self._ps2rl_root))
-        backup = self._path(self.param("backup"))
-        if not backup:
-            raise RuntimeError("Parameter 'backup' is required (a landing Phase-I run directory).")
-        if not Path(backup).exists():
-            raise RuntimeError(f"Parameter 'backup': '{backup}' does not exist.")
+        self._check_task_params()
 
         # Imported here: ps2rl is found through ps2rl_path, and the runtime sets JAX's
         # environment before JAX is first imported.
-        from ps2rl.deploy.landing_flight import FlightConfig, LandingFlight, Phase
-        from ps2rl.deploy.landing_runtime import LandingRuntime, LandingRuntimeConfig
+        FlightConfig, FlightClass, Phase = self._task_imports()
 
         self._Phase = Phase
         flight_defaults = FlightConfig()
         for f in fields(FlightConfig):
-            if f.name in VECTOR_PARAMS:
+            if f.name in self.VECTOR_PARAMS:
                 declare(f.name, ",".join(f"{v:g}" for v in getattr(flight_defaults, f.name)))
             elif f.name != "log_dir":
                 declare(f.name, getattr(flight_defaults, f.name))
@@ -206,10 +208,7 @@ class LandingBridge(Node):
         )
         self.get_logger().info(f"Thrust model: {self.thrust.describe()}")
 
-        runtime_values = {k: self.param(k) for k in RUNTIME_PARAMS if k != "backup"}
-        runtime_values["reference_path"] = self._path(runtime_values["reference_path"])
-        runtime_cfg = LandingRuntimeConfig(backup=backup, single_thread=self.param("jax_single_thread"), **runtime_values)
-        self.runtime = LandingRuntime(runtime_cfg, logger=self.get_logger())
+        self.runtime = self._make_runtime()
         if abs(self.policy_rate * self.runtime.dt - 1.0) > 1e-6:
             raise RuntimeError(
                 f"policy_rate {self.policy_rate:g} Hz does not match the backup's control step "
@@ -221,16 +220,16 @@ class LandingBridge(Node):
         self.log_dir = ""
         if log_root:
             stamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
-            self.log_dir = str(Path(log_root).expanduser() / f"{stamp}-{self.param('label') or 'landing'}")
+            self.log_dir = str(Path(log_root).expanduser() / f"{stamp}-{self.param('label') or self.DEFAULT_LABEL}")
         flight_kwargs = {}
         for f in fields(FlightConfig):
             if f.name == "log_dir":
                 flight_kwargs[f.name] = self.log_dir
-            elif f.name in VECTOR_PARAMS:
+            elif f.name in self.VECTOR_PARAMS:
                 flight_kwargs[f.name] = _vector(self.param(f.name), f.name)
             else:
                 flight_kwargs[f.name] = self.param(f.name)
-        self.flight = LandingFlight(
+        self.flight = FlightClass(
             self.runtime, FlightConfig(**flight_kwargs), logger=self.get_logger(),
             thrust_map=self.thrust.thrust_from_accel,
         )
@@ -324,6 +323,27 @@ class LandingBridge(Node):
     # ------------------------------------------------------------------ #
     # utilities                                                           #
     # ------------------------------------------------------------------ #
+
+    # ------------------------------------------------------------------ task hooks (landing)
+    def _check_task_params(self) -> None:
+        backup = self._path(self.param("backup"))
+        if not backup:
+            raise RuntimeError("Parameter 'backup' is required (a landing Phase-I run directory).")
+        if not Path(backup).exists():
+            raise RuntimeError(f"Parameter 'backup': '{backup}' does not exist.")
+
+    def _task_imports(self):
+        """(flight config class, flight logic class, phase enum) of this task."""
+        from ps2rl.deploy.landing_flight import FlightConfig, LandingFlight, Phase
+        return FlightConfig, LandingFlight, Phase
+
+    def _make_runtime(self):
+        from ps2rl.deploy.landing_runtime import LandingRuntime, LandingRuntimeConfig
+        runtime_values = {k: self.param(k) for k in self.RUNTIME_PARAMS if k != "backup"}
+        runtime_values["reference_path"] = self._path(runtime_values["reference_path"])
+        runtime_cfg = LandingRuntimeConfig(backup=self._path(self.param("backup")), single_thread=self.param("jax_single_thread"),
+                                           **runtime_values)
+        return LandingRuntime(runtime_cfg, logger=self.get_logger())
 
     def param(self, name: str):
         """Value of a declared parameter, in the type of its default."""
