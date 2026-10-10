@@ -15,8 +15,9 @@
     filter: "ue"                          # ue (UE-bCBF) / nominal (plain bCBF) / none (policy alone; the funnel is virtual)
     backup_from: "outputs/cone_obstacle_phase1/compare/chosen_backup.json"   # Phase-I backup the filter uses
     observer: "measured"                  # measured: thrust from the EKF's specific force; commanded: as in training; off
-    predict_ahead: 0.0                    # delay compensation [s]: act on the state predicted this far ahead (0 = off);
-                                          # set it to the command-to-effect delay if the flight oscillates (see README)
+    predict_ahead: 0.04                   # delay compensation [s]: act on the state predicted this far ahead (0 = off).
+                                          # Each flight prints its "effective delay" (rate-response fit); if a flight
+                                          # oscillates, set this to about that value (README_cone_obstacle.md)
     qp_solve_dtype: "float64"
     jax_platform: "cpu"
     jax_single_thread: true
