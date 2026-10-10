@@ -84,8 +84,14 @@ touched the target cylinder at t = 4.35 s
 filtered descent ended: episode complete after 7.59 s (touched the target at 4.35 s)
   380 control steps in 7.59 s (expected 381); funnel margin min +0.033 m, floor margin min +0.359 m; touched the target at 4.35 s
   filter: active on 42 % of steps, mean correction 5.07, largest slack 2.8e-04, QP fallbacks 0, safeguard blends 0, ...
-  roll/pitch rate response: delay 20 ms + first-order lag 38 ms = effective delay 58 ms (delay compensation in this flight: 40 ms; ...)
+...
+roll/pitch rate response: delay 30 ms + first-order lag 48 ms = effective delay 78 ms (fit error 0.44 rad/s RMS); delay compensation in this flight 40 ms - ...
+flight complete (episode complete after 7.59 s (touched the target at 4.33 s)); records in ...
 ```
+
+The rate-response line comes once the vehicle has landed. In the stand-in it recovers the
+vehicle it was given (e.g. 25 + 44 ms for a 20 ms delay and a 50 ms lag; the node's own computation
+adds about 10 ms of delay).
 
 ## Test sequence
 
