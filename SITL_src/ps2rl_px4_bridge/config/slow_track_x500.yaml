@@ -1,0 +1,46 @@
+# Slow forward + loop tracking on the stock Gazebo x500 (make px4_sitl gz_x500): first the PD controller,
+# then the trained policy (controller: policy, run: ...).
+#
+# Every field of SlowFlightConfig (PS2-RL/ps2rl/deploy/slow_track_flight.py, which extends the landing
+# FlightConfig) is also a parameter of this node and can be added below. Relative paths are taken from ps2rl_path.
+/ps2rl_slow_track:
+  ros__parameters:
+    ps2rl_path: "/home/dev/ws_shared/PS2-RL"
+
+    # ---- controller -------------------------------------------------------------------------
+    controller: "pd"                      # pd: the training environment's base controller; policy: a trained run
+    run: ""                               # policy: e.g. "outputs/slow_track/slow_loop_s0"
+    weights: "best"
+    reference_path: ""                    # empty: ps2rl/envs/assets/slow_loop/quadrotor_slow_loop_reference.npz (pd) / the run's (policy)
+    observer: "commanded"                 # commanded (as in training) / measured / off
+    handover_height: 2.0                  # hand-over point = reference start, this high above the take-off point [m]
+    extra_time: 2.0
+
+    policy_rate: 50.0                     # must match the reference / policy step (0.02 s)
+    setpoint_rate: 50.0
+
+    # ---- thrust map: a = k2 T^2 + k1 T + k0, measured on the stock x500 (ws_shared/thrust_fit_x500.yaml, as landing_x500.yaml)
+    # The command box is 0.5-1.5 g (4.9-14.7 m/s^2), inside the x500's 16.6 m/s^2.
+    thrust_model: "quadratic"
+    thrust_k2: 14.574044
+    thrust_k1: 0.807446
+    thrust_k0: 1.489934
+    hover_thrust: 0.728                   # used by the "linear" model only
+    thrust_min: 0.02
+    thrust_max: 1.0
+
+    # ---- flight -----------------------------------------------------------------------------
+    pad_offset: "0,0,0"                   # take-off point offset (the task frame hangs below the hand-over point)
+    settle_time: 8.0                      # hold at the hand-over point before handing over [s]; PX4's vertical velocity
+                                          # estimate was still settling ~10 s after take-off (up to 0.15 m/s off)
+    end_hold_time: 3.0                    # hover where the reference ended, then land [s]
+    max_track_error: 0.8                  # abort -> hover where it is -> land: tracking error [m]
+    tilt_abort_deg: 35.0                  #   ... tilt [deg]
+    max_speed: 1.5                        #   ... speed [m/s]
+    min_height: 0.7                       #   ... height above the take-off point [m]
+    recover_time: 3.0                     # hover this long after an abort, then land [s]
+
+    odom_timeout: 0.30                    # stale odometry during the controller phase -> abort
+    log_root: "/home/dev/ws_shared/experiments/slow_track"   # each flight gets <log_root>/<time>-<label>/
+    label: "pd"
+    exit_when_done: true
