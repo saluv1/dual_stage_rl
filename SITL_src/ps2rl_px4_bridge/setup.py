@@ -29,6 +29,7 @@ setup(
             "ps2rl_landing = ps2rl_px4_bridge.landing_node:main",
             "ps2rl_cone_obstacle = ps2rl_px4_bridge.cone_obstacle_node:main",
             "ps2rl_slow_track = ps2rl_px4_bridge.slow_track_node:main",
+            "ps2rl_cyl_online = ps2rl_px4_bridge.cyl_online_node:main",
         ],
     },
 )
