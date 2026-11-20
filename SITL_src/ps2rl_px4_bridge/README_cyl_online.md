@@ -31,6 +31,20 @@ BOOT -> ARM -> TAKEOFF -> GOTO_START (hold 8 s) -> POLICY -> RECOVER (hover 3 s)
 The frames, clock, arming, setpoint stream, fail-safes, PX4 clock-jump guard and CPU record are the slow-track
 bridge's: `CylOnlineBridge` subclasses `SlowTrackBridge`.
 
+**Compute (2026-11-20, for the Raspberry Pi).** The YAML defaults are now:
+- `control_period: 0.04`: one command every 40 ms (25 Hz), held by PX4 in between. The filter's rollouts hold each
+  command just as long. The node sets `policy_rate` from it.
+- `process: true`: the controller runs in its own process, so it no longer shares Python's GIL with the executor.
+  `worker_cpu` pins it to a core.
+- `executor: single`: one executor thread. The environment variable `PS2RL_EXECUTOR` overrides it if set.
+
+On a Pi 4B the old setup took 23–32 ms per step inside the node against 8 ms on its own. In simulation the flights at
+40 ms match the 20 ms ones (PS2-RL README §6). The node logs the CPU use of both processes after the controller phase.
+The summary records the round trip (`latency_ms`) and the controller's own time (`compute_ms`).
+
+To fly as on 2026-11-20 (the first SITL flights), override all three:
+`control_period:=0.02 process:=false executor:=multi`.
+
 ## Run
 
 Every terminal is `docker exec -it px4sitl bash` from the host. The bridge runs with the container's system `python3`,
@@ -89,14 +103,16 @@ python3 ~/ws_shared/PS2-RL/scripts/plot_cyl_online_flight.py $(ls -td 2026*/ | h
 ```
 
 The startup log should show:
-- `cyl-online runtime: ... numba`;
+- `controller process: pid ...`, `policy_rate 50 Hz -> 25 Hz (control_period 0.04 s)` and `executor: SingleThreadedExecutor`;
+- `cyl-online runtime: ... control period 40 ms, numba`;
 - the cylinders and the goal;
 - `start: 1.00 m from the nearest surface` for S1, or 1.20 m for O3.
 
 During GOTO_START, `at the start ...; holding for 8 s`. Then `hand-over to the filtered controller`. At the end:
 - `filtered descent ended: goal reached ...`;
 - the filter line: lam, modes, rollout steps;
-- the compute line: decision and step times.
+- the compute line: decision and step times against the control period;
+- after landing: the CPU use of the bridge process and of the controller process.
 
 The wording "descent", "pad" and "cone margin" comes from the landing logic this node shares; "cone margin" is the
 clearance from the cylinders.

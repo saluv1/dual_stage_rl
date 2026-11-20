@@ -22,14 +22,19 @@
     cruise: 1.0                           # [m/s]
     blends: 2                             # the recommended setting: lam in (1, 0), horizon 1 s, a decision every step
     horizon: 1.0
-    period: 1
+    period: 1                             # commands per filter decision
     backend: "auto"                       # numba if installed for python3, else numpy
     sensing_range: 6.0
     flight_height: 1.5                    # hand-over point and course height above the take-off point [m]
     observer_gain: 2.0                    # disturbance observer (absorbs the thrust-map error); 0 = off
 
-    policy_rate: 50.0                     # must match the backup's step (0.02 s)
-    setpoint_rate: 50.0
+    # ---- compute (2026-11-20, for the Raspberry Pi; the first SITL flights used 0.02 / false / multi) -------------
+    control_period: 0.04                  # one command per 40 ms (25 Hz), held by PX4; the filter's rollouts hold it
+                                          # as long. policy_rate follows it. 0.02 = 50 Hz
+    process: true                         # the controller in its own process: no GIL shared with the executor
+    worker_cpu: -1                        # process: pin it to a CPU core (e.g. 3 on the Pi); -1 = no pinning
+    executor: "single"                    # ROS executor threads: single / multi (env PS2RL_EXECUTOR takes precedence)
+    setpoint_rate: 50.0                   # the offboard stream re-sends the held command at this rate
 
     # ---- thrust map: a = k2 T^2 + k1 T + k0, measured on the stock x500 (ws_shared/thrust_fit_x500.yaml, as slow_track_x500.yaml)
     # The command box is 0.5-1.5 g (4.9-14.7 m/s^2), inside the x500's 16.6 m/s^2.

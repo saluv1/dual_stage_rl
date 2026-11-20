@@ -10,6 +10,7 @@ Then, for example:
     ros2 launch ps2rl_px4_bridge ps2rl_cyl_online.launch.py course:=O3 label:=O3_planner
     ros2 launch ps2rl_px4_bridge ps2rl_cyl_online.launch.py course:=S1 label:=S1_planner
     ros2 launch ps2rl_px4_bridge ps2rl_cyl_online.launch.py course:=O3 nominal:=straight label:=O3_straight
+    ros2 launch ps2rl_px4_bridge ps2rl_cyl_online.launch.py course:=O3 control_period:=0.02 process:=false executor:=multi   # as flown 2026-11-20
 
 Any argument below overrides the value in the config file, but only when it is given: an unset argument leaves the
 YAML value alone. To clear a text value pass ``obstacles:=none``; an empty value means "not given". Parameters that are
@@ -37,6 +38,11 @@ OVERRIDABLE = {
     "cruise": "cruise speed [m/s]",
     "blends": "2, 3 or 5",
     "horizon": "backup rollout [s]",
+    "period": "commands per filter decision",
+    "control_period": "seconds per command (0.02 = 50 Hz, 0.04 = 25 Hz)",
+    "process": "true: the controller in its own process",
+    "worker_cpu": "process: pin the controller to this CPU core (-1: no)",
+    "executor": "single or multi (ROS executor threads)",
     "backend": "numpy, numba or auto",
     "flight_height": "hand-over point and course height above the take-off point [m]",
     "policy_timeout": "longest controller phase [s]",
