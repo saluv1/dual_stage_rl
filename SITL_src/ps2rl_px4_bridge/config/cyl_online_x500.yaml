@@ -28,13 +28,17 @@
     flight_height: 1.5                    # hand-over point and course height above the take-off point [m]
     observer_gain: 2.0                    # disturbance observer (absorbs the thrust-map error); 0 = off
 
-    # ---- compute (2026-11-20, for the Raspberry Pi; the first SITL flights used 0.02 / false / multi) -------------
+    # ---- compute (2026-11-20, for the Raspberry Pi; the first SITL flights used 0.02 / false / multi / executor) --
     control_period: 0.04                  # one command per 40 ms (25 Hz), held by PX4; the filter's rollouts hold it
                                           # as long. policy_rate follows it. 0.02 = 50 Hz
     process: true                         # the controller in its own process: no GIL shared with the executor
     worker_cpu: -1                        # process: pin it to a CPU core (e.g. 3 on the Pi); -1 = no pinning
-    executor: "single"                    # ROS executor threads: single / multi (env PS2RL_EXECUTOR takes precedence)
-    setpoint_rate: 50.0                   # the offboard stream re-sends the held command at this rate
+    io: "poll"                            # poll: no rclpy executor (one loop, polled_loop.py); executor: as before
+    executor: "single"                    # io executor only: single / multi (env PS2RL_EXECUTOR takes precedence)
+    setpoint_rate: 25.0                   # the offboard stream re-sends the held command at this rate (skipped right
+                                          # after a control step published it)
+    outgoing_stamp: "receipt"             # stamp 0: PX4 stamps on receipt (immune to time-sync jumps); node / px4
+    bridge_cpu: -1                        # pin the bridge process to a CPU core (e.g. 2 on the Pi); -1 = no pinning
 
     # ---- thrust map: a = k2 T^2 + k1 T + k0, measured on the stock x500 (ws_shared/thrust_fit_x500.yaml, as slow_track_x500.yaml)
     # The command box is 0.5-1.5 g (4.9-14.7 m/s^2), inside the x500's 16.6 m/s^2.

@@ -23,19 +23,57 @@ flight event. A real PX4 restart still ends the flight: arming and offboard mode
 The node also records its own CPU use over the controller phase as a flight event. A bridge that
 burns several cores (spinning BLAS threads, see ``ps2rl_px4_bridge/__init__.py``) starves Gazebo and
 PX4 in SITL: IMU samples arrive late, EKF2's vertical velocity jumps up and the height sags.
+
+Outgoing stamps (parameter ``outgoing_stamp``, 2026-11-20). PX4 v1.16 / v1.17 convert the stamp of every message they
+receive (Tools/msg/templates/ucdr/msg.h.em): 0 becomes PX4's time of receipt, anything else min(stamp - time-sync
+offset, now). Commander counts the offboard signal as lost when now >= offboard_control_mode.timestamp + COM_OF_LOSS_T.
+The landing bridge stamped with the odometry clock, which here the stamp guard keeps continuous: after a time-sync
+jump of +6 s every outgoing stamp was 6 s old in PX4's domain, PX4 declared the offboard signal lost and landed (all
+five Pi SITL flights, 2026-11-20).
+  receipt   (default) stamp 0: PX4 stamps on receipt, so the offboard check measures only whether messages arrive
+  node      this computer's clock (the px4_ros_com examples): right once the time sync has converged, stale while a
+            jump re-converges
+  px4       the latest raw odometry stamp (the Pi-side fix): stale for one odometry period after a jump
+
+PX4 topic names (2026-11-20): PX4 appends ``_v<N>`` to a topic whose message has MESSAGE_VERSION N > 0 (v1.17:
+vehicle_local_position_v1, vehicle_status_v1; v1.16: vehicle_status_v1 only). A ``topic_*`` parameter left at its
+default is named from the installed px4_msgs this way; one set explicitly is used as given.
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import resource
 
 import rclpy
 from rclpy.executors import MultiThreadedExecutor
 
+from ps2rl_px4_bridge import landing_node as _landing
 from ps2rl_px4_bridge.landing_node import LandingBridge
 from ps2rl_px4_bridge.px4_stamp_guard import StampGuard
+
+OUTGOING_STAMPS = ("receipt", "node", "px4")
+
+# the px4_msgs class carried on each topic of LandingBridge's TOPICS (for the version suffix)
+_TOPIC_CLASS = {
+    "odometry": "VehicleOdometry",
+    "local_position": "VehicleLocalPosition",
+    "status": "VehicleStatus",
+    "land_detected": "VehicleLandDetected",
+    "offboard_control_mode": "OffboardControlMode",
+    "trajectory_setpoint": "TrajectorySetpoint",
+    "rates_setpoint": "VehicleRatesSetpoint",
+    "vehicle_command": "VehicleCommand",
+}
+
+
+def versioned_topic(name: str, msg_class) -> str:
+    """PX4's DDS name of a topic: the base name, plus _v<N> when the message has MESSAGE_VERSION N > 0."""
+    base = re.sub(r"_v\d+$", "", str(name))
+    version = int(getattr(msg_class, "MESSAGE_VERSION", 0) or 0)
+    return f"{base}_v{version}" if version > 0 else base
 
 # parameters of the slow-track runtime: name -> default (see ps2rl/deploy/slow_track_runtime.py)
 SLOW_RUNTIME_PARAMS = {
@@ -78,8 +116,33 @@ class SlowTrackBridge(LandingBridge):
         self._status_guard = StampGuard()
         self._cpu_mark: tuple[float, float] | None = None
         self._cpu_reported = False
+        self._stamp_mode = "receipt"     # until the parameter is read; nothing is published before that
+        self._raw_px4_us = 0
         super().__init__(*args, **kwargs)
+        self.declare_parameter("outgoing_stamp", "receipt")
+        self._stamp_mode = str(self.get_parameter("outgoing_stamp").value).strip().lower()
+        if self._stamp_mode not in OUTGOING_STAMPS:
+            raise RuntimeError(f"outgoing_stamp must be one of {', '.join(OUTGOING_STAMPS)}, got '{self._stamp_mode}'")
         self.get_logger().info(f"BLAS threading: {_blas_threads()}")
+        self.get_logger().info("PX4 topics: " + ", ".join(f"{k} {v}" for k, v in self._topic.items() if v)
+                               + f"; outgoing stamps: {self._stamp_mode}")
+
+    def param(self, name: str):
+        """A topic left at LandingBridge's default is named from the installed px4_msgs (version suffix)."""
+        value = super().param(name)
+        if name.startswith("topic_") and value and value == self._defaults.get(name):
+            cls = getattr(_landing, _TOPIC_CLASS.get(name[len("topic_"):], ""), None)
+            if cls is not None:
+                value = versioned_topic(value, cls)
+        return value
+
+    def now_us(self) -> int:
+        """Stamp of the messages sent to PX4 (see the module docstring, outgoing stamps)."""
+        if self._stamp_mode == "receipt":
+            return 0
+        if self._stamp_mode == "node":
+            return int(self.get_clock().now().nanoseconds // 1000)
+        return self._raw_px4_us if self._raw_px4_us > 0 else super().now_us()
 
     def _logic_tick(self) -> None:
         self._watch_cpu()
@@ -123,6 +186,7 @@ class SlowTrackBridge(LandingBridge):
                 pass
 
     def _on_odom(self, msg) -> None:
+        self._raw_px4_us = int(getattr(msg, "timestamp", 0))   # PX4's own stamp, before the guard maps it
         self._guard(self._odom_guard, msg, "odometry")
         super()._on_odom(msg)
 
