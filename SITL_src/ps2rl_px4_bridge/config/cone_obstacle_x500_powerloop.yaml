@@ -1,0 +1,50 @@
+# Outside-cone task on the light Gazebo airframe x500_powerloop (1 kg, rate limits 1100 deg/s;
+# set up with ws_shared/setup_px4_powerloop.sh, run with `make px4_sitl gz_x500_powerloop`).
+# The policies were trained with the 4 g box (thrust 0-39.24 m/s^2, body rates +-18 rad/s), which this
+# airframe can deliver (39.24 m/s^2 -> normalised thrust ~0.43 with the map below); the stock x500 cannot.
+#
+# Every field of ConeFlightConfig (PS2-RL/ps2rl/deploy/cone_obstacle_flight.py, which extends the landing
+# FlightConfig) is also a parameter of this node and can be added below. Relative paths are taken from ps2rl_path.
+/ps2rl_cone_obstacle:
+  ros__parameters:
+    ps2rl_path: "/home/dev/ws_shared/PS2-RL"
+
+    # ---- controller -------------------------------------------------------------------------
+    run: "outputs/cone_obstacle_phase2_ue/cone_ue_ps2_s0"                    # the policy (Phase-II run)
+    weights: "best"
+    filter: "ue"                          # ue (UE-bCBF) / nominal (plain bCBF) / none (policy alone; the funnel is virtual)
+    backup_from: "outputs/cone_obstacle_phase1/compare/chosen_backup.json"   # Phase-I backup the filter uses
+    observer: "measured"                  # measured: thrust from the EKF's specific force; commanded: as in training; off
+    predict_ahead: 0.04                   # delay compensation [s]: act on the state predicted this far ahead (0 = off).
+                                          # Each flight prints its "effective delay" (rate-response fit); if a flight
+                                          # oscillates, set this to about that value (README_cone_obstacle.md)
+    qp_solve_dtype: "float64"
+    jax_platform: "cpu"
+    jax_single_thread: true
+
+    policy_rate: 50.0                     # must match the policy's control step (0.02 s)
+    setpoint_rate: 50.0
+
+    # ---- thrust map of x500_powerloop: a = k2 T^2 + k1 T + k0 (bridge_x500_powerloop.yaml, thrust_fit_1kg.yaml)
+    thrust_model: "quadratic"
+    thrust_k2: 140.163116
+    thrust_k1: 34.359792
+    thrust_k0: -0.940572
+    hover_thrust: 0.178
+    thrust_min: 0.02
+    thrust_max: 1.0
+
+    # ---- flight -----------------------------------------------------------------------------
+    # The task frame is anchored at the ground point below the reference start, i.e. at the take-off point:
+    # the vehicle climbs to the start (2.2 m) and the (virtual) funnel axis is 3 m along local x (east).
+    pad_offset: "0,0,0"
+    policy_duration: 0.0                  # 0 = one training episode (reference 5.6 s + 2 s)
+    end_hold_time: 3.0                    # hold where the episode ended, then PX4 lands
+    funnel_abort_depth: 0.5               # filtered flights: abort if inside the funnel by more than this [m]
+    floor_abort_depth: 0.3                # abort below the floor (0.5 m above ground) by more than this [m]
+    tilt_abort_deg: 110.0
+
+    odom_timeout: 0.30
+    log_root: "/home/dev/ws_shared/experiments/cone_obstacle"   # each flight gets <log_root>/<time>-<label>/
+    label: "ps2_ue"
+    exit_when_done: true
